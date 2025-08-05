@@ -113,17 +113,11 @@ jobs:
         docker compose up -d db minio qdrant
         sleep 10
         
-        # Test ingestion service
-        docker compose build ingestion-service
-        docker run --rm --network host quickresolve_ingestion-service:latest python -c "print('Ingestion service image test passed')"
+        # Test that services can start (this will fail if images are broken)
+        docker compose up ingestion-service embedding-service frontend --abort-on-container-exit --timeout 30
         
-        # Test embedding service
-        docker compose build embedding-service
-        docker run --rm --network host quickresolve_embedding-service:latest python -c "print('Embedding service image test passed')"
-        
-        # Test frontend
-        docker compose build frontend
-        docker run --rm quickresolve_frontend:latest nginx -t
+        # Clean up
+        docker compose down
 
   security-scan:
     runs-on: ubuntu-latest

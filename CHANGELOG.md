@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Contributing guidelines
 - Professional GitHub repository structure
 
-## [1.0.0] - 2024-01-XX
+## [1.0.0] - 2025-08-05
 
 ### Added
 - **Core Application Features**
@@ -61,7 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Troubleshooting guide
 - Contributing guidelines
 
-## [0.1.0] - 2024-01-XX
+## [0.1.0] - 2025-08-01
 
 ### Added
 - Initial project structure

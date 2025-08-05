@@ -1,0 +1,79 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./minio_data:/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9001"
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - ingestion-service
+
+  ingestion-service:
+    build: ./ingestion-service
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
+      S3_ENDPOINT: "http://minio:9000"
+      S3_ACCESS_KEY: "${MINIO_ROOT_USER}"
+      S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD}"
+      S3_BUCKET: "${S3_BUCKET}"
+    depends_on:
+      - db
+      - minio
+
+  embedding-service:
+    build: ./embedding-service
+    ports:
+      - "8001:8001"
+    environment:
+      QDRANT_URL: "http://qdrant:6333"
+      S3_ENDPOINT: "http://minio:9000"
+      S3_ACCESS_KEY: "${MINIO_ROOT_USER}"
+      S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD}"
+      S3_BUCKET: "${S3_BUCKET}"
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+    depends_on:
+      - qdrant
+      - minio
+
+  data-generator:
+    build: ./data-generator
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+    volumes:
+      - ./customer_service_data:/app/customer_service_data
+    profiles:
+      - generate-data
+
+volumes:
+  postgres_data:
+  qdrant_storage: 

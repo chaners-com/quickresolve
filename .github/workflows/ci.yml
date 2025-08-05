@@ -147,6 +147,9 @@ jobs:
       if: always()
       with:
         sarif_file: 'trivy-results.sarif'
+      continue-on-error: true
+      # Note: This step may fail if GitHub Advanced Security is not enabled
+      # This is normal for free repositories and doesn't affect the CI pipeline
 
   dependency-check:
     runs-on: ubuntu-latest

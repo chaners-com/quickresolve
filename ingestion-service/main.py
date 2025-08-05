@@ -164,6 +164,7 @@ async def create_upload_file(
                 "file_id": db_file.id,
                 "workspace_id": workspace_id,
             },
+            timeout=30,  # Add timeout to prevent hanging requests
         )
     except requests.exceptions.RequestException:
         # In a real app, you might want a retry mechanism or a more robust way

@@ -3,13 +3,15 @@ Basic tests for the embedding service.
 These tests ensure the service can start and basic functionality works.
 """
 
-import pytest
-from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
+import os
 
 # Import the app from main
 import sys
-import os
+from unittest.mock import MagicMock, patch
+
+import pytest
+from fastapi.testclient import TestClient
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Set test environment variables
@@ -40,7 +42,7 @@ def test_app_creation():
     if app is None:
         pytest.skip("App could not be imported - skipping app tests")
     assert app is not None
-    assert hasattr(app, 'routes')
+    assert hasattr(app, "routes")
 
 
 def test_health_check():
@@ -49,12 +51,12 @@ def test_health_check():
         pytest.skip("App could not be imported - skipping app tests")
     # This test ensures the app can be imported and has basic structure
     assert app is not None
-    assert hasattr(app, 'routes')
+    assert hasattr(app, "routes")
     assert len(app.routes) > 0
 
 
-@patch('main.qdrant_client')
-@patch('main.s3')
+@patch("main.qdrant_client")
+@patch("main.s3")
 def test_embed_endpoint_exists(mock_s3, mock_qdrant):
     """Test that the embed endpoint exists."""
     if app is None:
@@ -62,18 +64,18 @@ def test_embed_endpoint_exists(mock_s3, mock_qdrant):
     # Mock the Qdrant client
     mock_qdrant_client = MagicMock()
     mock_qdrant.return_value = mock_qdrant_client
-    
+
     # Mock S3 client
     mock_s3_client = MagicMock()
     mock_s3.return_value = mock_s3_client
-    
+
     # Check that the endpoint exists in the app routes
     routes = [route.path for route in app.routes]
     assert "/embed/" in routes
 
 
-@patch('main.qdrant_client')
-@patch('main.s3')
+@patch("main.qdrant_client")
+@patch("main.s3")
 def test_search_endpoint_exists(mock_s3, mock_qdrant):
     """Test that the search endpoint exists."""
     if app is None:
@@ -81,11 +83,11 @@ def test_search_endpoint_exists(mock_s3, mock_qdrant):
     # Mock the Qdrant client
     mock_qdrant_client = MagicMock()
     mock_qdrant.return_value = mock_qdrant_client
-    
+
     # Mock S3 client
     mock_s3_client = MagicMock()
     mock_s3.return_value = mock_s3_client
-    
+
     # Check that the endpoint exists in the app routes
     routes = [route.path for route in app.routes]
     assert "/search/" in routes
@@ -98,10 +100,11 @@ def test_cors_middleware_configured():
     # Check that CORS middleware is added to the app
     middleware_classes = [middleware.cls for middleware in app.user_middleware]
     from fastapi.middleware.cors import CORSMiddleware
+
     assert CORSMiddleware in middleware_classes
 
 
-@patch('main.genai')
+@patch("main.genai")
 def test_gemini_import_works(mock_genai):
     """Test that the Gemini AI import works."""
     if app is None:
@@ -112,4 +115,4 @@ def test_gemini_import_works(mock_genai):
 
 
 if __name__ == "__main__":
-    pytest.main([__file__]) 
+    pytest.main([__file__])

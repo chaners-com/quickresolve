@@ -3,13 +3,15 @@ Basic tests for the ingestion service.
 These tests ensure the service can start and basic functionality works.
 """
 
-import pytest
-from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
+import os
 
 # Import the app from main
 import sys
-import os
+from unittest.mock import MagicMock, patch
+
+import pytest
+from fastapi.testclient import TestClient
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Set test environment variables
@@ -39,7 +41,7 @@ def test_app_creation():
     if app is None:
         pytest.skip("App could not be imported - skipping app tests")
     assert app is not None
-    assert hasattr(app, 'routes')
+    assert hasattr(app, "routes")
 
 
 def test_health_check():
@@ -48,12 +50,12 @@ def test_health_check():
         pytest.skip("App could not be imported - skipping app tests")
     # This test ensures the app can be imported and has basic structure
     assert app is not None
-    assert hasattr(app, 'routes')
+    assert hasattr(app, "routes")
     assert len(app.routes) > 0
 
 
-@patch('main.SessionLocal')
-@patch('main.s3')
+@patch("main.SessionLocal")
+@patch("main.s3")
 def test_upload_file_endpoint_exists(mock_s3, mock_db):
     """Test that the upload file endpoint exists."""
     if app is None:
@@ -61,17 +63,17 @@ def test_upload_file_endpoint_exists(mock_s3, mock_db):
     # Mock the database session
     mock_session = MagicMock()
     mock_db.return_value = mock_session
-    
+
     # Mock S3 client
     mock_s3_client = MagicMock()
     mock_s3.return_value = mock_s3_client
-    
+
     # Check that the endpoint exists in the app routes
     routes = [route.path for route in app.routes]
     assert "/uploadfile/" in routes
 
 
-@patch('main.SessionLocal')
+@patch("main.SessionLocal")
 def test_users_endpoint_exists(mock_db):
     """Test that the users endpoint exists."""
     if app is None:
@@ -79,13 +81,13 @@ def test_users_endpoint_exists(mock_db):
     # Mock the database session
     mock_session = MagicMock()
     mock_db.return_value = mock_session
-    
+
     # Check that the endpoint exists in the app routes
     routes = [route.path for route in app.routes]
     assert "/users/" in routes
 
 
-@patch('main.SessionLocal')
+@patch("main.SessionLocal")
 def test_workspaces_endpoint_exists(mock_db):
     """Test that the workspaces endpoint exists."""
     if app is None:
@@ -93,7 +95,7 @@ def test_workspaces_endpoint_exists(mock_db):
     # Mock the database session
     mock_session = MagicMock()
     mock_db.return_value = mock_session
-    
+
     # Check that the endpoint exists in the app tests
     routes = [route.path for route in app.routes]
     assert "/workspaces/" in routes
@@ -106,8 +108,9 @@ def test_cors_middleware_configured():
     # Check that CORS middleware is added to the app
     middleware_classes = [middleware.cls for middleware in app.user_middleware]
     from fastapi.middleware.cors import CORSMiddleware
+
     assert CORSMiddleware in middleware_classes
 
 
 if __name__ == "__main__":
-    pytest.main([__file__]) 
+    pytest.main([__file__])

@@ -4,4 +4,8 @@ sqlalchemy
 psycopg2-binary
 boto3
 requests
-python-multipart 
+python-multipart
+# Testing dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+httpx>=0.24.0 

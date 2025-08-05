@@ -1,7 +1,10 @@
 const uploadBtn = document.getElementById('upload');
 const searchBtn = document.getElementById('search');
-const message = document.getElementById('message');
+const selectWorkspaceBtn = document.getElementById('selectWorkspace');
+const uploadMessage = document.getElementById('uploadMessage');
+const workspaceMessage = document.getElementById('workspaceMessage');
 const resultsDiv = document.getElementById('results');
+const searchSection = document.getElementById('searchSection');
 
 let currentWorkspaceId; // To keep track of the active workspace for searching
 
@@ -15,54 +18,75 @@ async function handleRequest(url, options, errorMessage) {
         }
         return data;
     } catch (error) {
-        message.textContent = `${errorMessage}: ${error.message}`;
         console.error(errorMessage, error);
+        // Show error message to user
+        if (errorMessage.includes('upload')) {
+            uploadMessage.textContent = `${errorMessage}: ${error.message}`;
+            uploadMessage.className = 'error';
+        } else if (errorMessage.includes('workspace') || errorMessage.includes('user')) {
+            workspaceMessage.textContent = `${errorMessage}: ${error.message}`;
+            workspaceMessage.className = 'error';
+        }
         return null;
     }
 }
 
 // Function to find a user by name, or create them if they don't exist
 async function getOrCreateUser(username) {
-    message.textContent = `Checking for user '${username}'...`;
-    let users = await handleRequest(
+    uploadMessage.textContent = `Checking for user '${username}'...`;
+    uploadMessage.className = '';
+    
+    // First, try to find the user
+    const existingUser = await handleRequest(
         `http://localhost:8000/users/?username=${encodeURIComponent(username)}`,
         { method: 'GET' },
-        'Failed to get user'
+        'Failed to check for existing user'
     );
 
-    if (users && users.length > 0) {
-        message.textContent = `User '${username}' found.`;
-        return users[0];
+    if (existingUser && existingUser.length > 0) {
+        uploadMessage.textContent = `Found existing user '${username}'`;
+        return existingUser[0];
     }
 
-    message.textContent = `User '${username}' not found. Creating...`;
-    return await handleRequest(
+    // If user doesn't exist, create them
+    uploadMessage.textContent = `Creating new user '${username}'...`;
+    const newUser = await handleRequest(
         'http://localhost:8000/users/',
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username }),
+            body: JSON.stringify({ username: username }),
         },
         'Failed to create user'
     );
+
+    if (newUser) {
+        uploadMessage.textContent = `Successfully created user '${username}'`;
+        return newUser;
+    }
+    
+    uploadMessage.textContent = 'Failed to create user';
+    return null;
 }
 
-// Function to find a workspace, or create it if it doesn't exist
 async function getOrCreateWorkspace(workspaceName, userId) {
-    message.textContent = `Checking for workspace '${workspaceName}'...`;
-    let workspaces = await handleRequest(
-        `http://localhost:8000/workspaces/?name=${encodeURIComponent(workspaceName)}&owner_id=${userId}`,
+    uploadMessage.textContent = `Checking for workspace '${workspaceName}'...`;
+    
+    // First, try to find the workspace for this user
+    const existingWorkspace = await handleRequest(
+        `http://localhost:8000/workspaces/?owner_id=${userId}&name=${encodeURIComponent(workspaceName)}`,
         { method: 'GET' },
-        'Failed to get workspace'
+        'Failed to check for existing workspace'
     );
 
-    if (workspaces && workspaces.length > 0) {
-        message.textContent = `Workspace '${workspaceName}' found.`;
-        return workspaces[0];
+    if (existingWorkspace && existingWorkspace.length > 0) {
+        uploadMessage.textContent = `Found existing workspace '${workspaceName}'`;
+        return existingWorkspace[0];
     }
 
-    message.textContent = `Workspace '${workspaceName}' not found. Creating...`;
-    return await handleRequest(
+    // If workspace doesn't exist, create it
+    uploadMessage.textContent = `Creating new workspace '${workspaceName}'...`;
+    const newWorkspace = await handleRequest(
         'http://localhost:8000/workspaces/',
         {
             method: 'POST',
@@ -71,6 +95,53 @@ async function getOrCreateWorkspace(workspaceName, userId) {
         },
         'Failed to create workspace'
     );
+
+    if (newWorkspace) {
+        uploadMessage.textContent = `Successfully created workspace '${workspaceName}'`;
+        return newWorkspace;
+    }
+    
+    uploadMessage.textContent = 'Failed to create workspace';
+    return null;
+}
+
+// Function to find a user by name (for search)
+async function findUser(username) {
+    workspaceMessage.textContent = `Looking for user '${username}'...`;
+    workspaceMessage.className = '';
+    
+    const existingUser = await handleRequest(
+        `http://localhost:8000/users/?username=${encodeURIComponent(username)}`,
+        { method: 'GET' },
+        'Failed to find user'
+    );
+
+    if (existingUser && existingUser.length > 0) {
+        workspaceMessage.textContent = `Found user '${username}'`;
+        return existingUser[0];
+    }
+    
+    workspaceMessage.textContent = `User '${username}' not found`;
+    return null;
+}
+
+// Function to find a workspace by name and user (for search)
+async function findWorkspace(workspaceName, userId) {
+    workspaceMessage.textContent = `Looking for workspace '${workspaceName}'...`;
+    
+    const existingWorkspace = await handleRequest(
+        `http://localhost:8000/workspaces/?owner_id=${userId}&name=${encodeURIComponent(workspaceName)}`,
+        { method: 'GET' },
+        'Failed to find workspace'
+    );
+
+    if (existingWorkspace && existingWorkspace.length > 0) {
+        workspaceMessage.textContent = `Found workspace '${workspaceName}'`;
+        return existingWorkspace[0];
+    }
+    
+    workspaceMessage.textContent = `Workspace '${workspaceName}' not found for this user`;
+    return null;
 }
 
 // Search function
@@ -81,7 +152,7 @@ async function performSearch() {
         return;
     }
     if (!currentWorkspaceId) {
-        resultsDiv.innerHTML = 'Please upload a file first to establish a workspace context.';
+        resultsDiv.innerHTML = 'Please select a workspace first.';
         return;
     }
 
@@ -154,16 +225,43 @@ async function toggleContent(event) {
     }
 }
 
+// Workspace selection function
+async function selectWorkspace() {
+    const username = document.getElementById('searchUsername').value;
+    const workspaceName = document.getElementById('searchWorkspace').value;
+
+    if (!username || !workspaceName) {
+        workspaceMessage.textContent = 'Please enter both username and workspace name.';
+        return;
+    }
+
+    // Find the user
+    const user = await findUser(username);
+    if (!user) return;
+
+    // Find the workspace for this user
+    const workspace = await findWorkspace(workspaceName, user.id);
+    if (!workspace) return;
+
+    // Set the current workspace for searching
+    currentWorkspaceId = workspace.id;
+    workspaceMessage.textContent = `Selected workspace: ${workspaceName} (ID: ${workspace.id})`;
+    
+    // Show the search section
+    searchSection.style.display = 'block';
+    resultsDiv.innerHTML = ''; // Clear any previous results
+}
+
 // Main upload logic
 uploadBtn.addEventListener('click', async () => {
     // 1. Get all necessary inputs
-    const username = document.getElementById('username').value;
-    const workspaceName = document.getElementById('workspace').value;
+    const username = document.getElementById('uploadUsername').value;
+    const workspaceName = document.getElementById('uploadWorkspace').value;
     const fileInput = document.getElementById('file');
     const files = fileInput.files;
 
     if (!username || !workspaceName || files.length === 0) {
-        message.textContent = 'Please fill in all fields and choose at least one file.';
+        uploadMessage.textContent = 'Please fill in all fields and choose at least one file.';
         return;
     }
 
@@ -174,12 +272,11 @@ uploadBtn.addEventListener('click', async () => {
     // 3. Get or create the workspace
     const workspace = await getOrCreateWorkspace(workspaceName, user.id);
     if (!workspace) return; // Stop if workspace creation failed
-    currentWorkspaceId = workspace.id; // Set the current workspace for searching
 
     // 4. Upload the files sequentially
     for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        message.textContent = `Uploading file ${i + 1} of ${files.length}: '${file.name}'...`;
+        uploadMessage.textContent = `Uploading file ${i + 1} of ${files.length}: '${file.name}'...`;
         
         const formData = new FormData();
         formData.append('file', file);
@@ -194,12 +291,14 @@ uploadBtn.addEventListener('click', async () => {
         );
         
         if (!uploadResult) {
-            message.textContent += ' Halting upload process.';
+            uploadMessage.textContent += ' Halting upload process.';
             return; // Stop the batch if any file fails
         }
     }
     
-    message.textContent = `Successfully uploaded all ${files.length} files!`;
+    uploadMessage.textContent = `Successfully uploaded all ${files.length} files!`;
 });
 
+// Event listeners
+selectWorkspaceBtn.addEventListener('click', selectWorkspace);
 searchBtn.addEventListener('click', performSearch); 

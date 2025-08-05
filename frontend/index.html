@@ -8,7 +8,16 @@
 </head>
 <body>
     <div class="container">
-        <h1>Upload Files</h1>
+        <header class="main-header">
+            <h1>QuickResolve - File Management & AI Chat</h1>
+            <nav class="main-nav">
+                <a href="/" class="nav-link active">File Upload</a>
+                <a href="/chat" class="nav-link">AI Chat Assistant</a>
+            </nav>
+        </header>
+        
+        <div class="upload-section">
+            <h2>Upload Files</h2>
         <div class="form-group">
             <label for="uploadUsername">Username:</label>
             <input type="text" id="uploadUsername" placeholder="Enter your username">
@@ -25,8 +34,10 @@
         <p id="uploadMessage"></p>
     </div>
 
-    <div class="container search-container">
-        <h1>Search Files</h1>
+        </div>
+
+        <div class="container search-container">
+            <h2>Search Files</h2>
         <div class="form-group">
             <label for="searchUsername">Username:</label>
             <input type="text" id="searchUsername" placeholder="Enter username to search">

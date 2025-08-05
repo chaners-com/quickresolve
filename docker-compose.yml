@@ -65,6 +65,17 @@ services:
       - qdrant
       - minio
 
+  ai-agent-service:
+    build: ./ai-agent-service
+    ports:
+      - "8002:8002"
+    environment:
+      QDRANT_URL: "http://qdrant:6333"
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+    depends_on:
+      - qdrant
+      - embedding-service
+
   data-generator:
     build: ./data-generator
     environment:

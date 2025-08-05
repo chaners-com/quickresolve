@@ -4,16 +4,17 @@ A modern document search and retrieval system built with microservices architect
 
 ## 🚀 Overview
 
-QuickResolve is a full-stack application that allows users to upload documents, automatically generate embeddings using Google's Gemini AI, and perform semantic search across their documents. The system is designed with a microservices architecture for scalability and maintainability.
+QuickResolve is a full-stack application that allows users to upload documents, automatically generate embeddings using Google's Gemini AI, perform semantic search across their documents, and interact with an AI-powered customer service chatbot. The system is designed with a microservices architecture for scalability and maintainability.
 
 ## 🏗️ Architecture
 
 The application consists of the following microservices:
 
 ### Core Services
-- **Frontend** (`frontend/`): Web interface for file upload and search
+- **Frontend** (`frontend/`): Web interface for file upload, search, and AI chat
 - **Ingestion Service** (`ingestion-service/`): Handles file uploads and metadata management
 - **Embedding Service** (`embedding-service/`): Generates embeddings using Gemini AI
+- **AI Agent Service** (`ai-agent-service/`): AI-powered customer service chatbot
 - **Data Generator** (`data-generator/`): Generates sample customer service tickets for testing
 
 ### Infrastructure Services
@@ -85,9 +86,11 @@ docker-compose --profile generate-data up -d
 ### 4. Access the Application
 
 - **Frontend**: http://localhost:8080
+- **Chat Interface**: http://localhost:8080/chat
 - **MinIO Console**: http://localhost:9001
 - **Ingestion Service API**: http://localhost:8000
 - **Embedding Service API**: http://localhost:8001
+- **AI Agent Service API**: http://localhost:8002
 - **Qdrant**: http://localhost:6333
 
 ## 📖 Usage Guide
@@ -106,7 +109,15 @@ docker-compose --profile generate-data up -d
 3. Click "Search" to find relevant documents
 4. Click "Show Content" to view document contents
 
-### 3. Generate Sample Data
+### 3. AI Chat Assistant
+
+1. Navigate to the Chat Interface at http://localhost:8080/chat
+2. Select a workspace from the dropdown
+3. Start a conversation with the AI assistant
+4. The AI will search through your documents to provide relevant answers
+5. View the sources used by the AI in the sidebar
+
+### 4. Generate Sample Data
 
 To generate sample customer service tickets for testing:
 
@@ -132,6 +143,13 @@ This will create 100 sample tickets in the `customer_service_data/` directory.
 - `POST /embed/` - Generate embeddings for a file
 - `GET /search/?query={query}&workspace_id={id}&top_k={k}` - Search documents
 
+### AI Agent Service (Port 8002)
+
+- `GET /health` - Service health check
+- `GET /workspaces` - Get available workspaces
+- `POST /conversation` - Handle conversation with AI assistant
+- `GET /search/{workspace_id}` - Search documents in specific workspace
+
 ## 🏗️ Project Structure
 
 ```
@@ -140,6 +158,9 @@ quickresolve/
 │   ├── index.html           # Main HTML file
 │   ├── script.js            # Frontend JavaScript
 │   ├── style.css            # Styling
+│   ├── chat.html            # Chat interface
+│   ├── chat.js              # Chat functionality
+│   ├── chat-style.css       # Chat styling
 │   ├── Dockerfile           # Frontend container
 │   └── nginx.conf           # Nginx configuration
 ├── ingestion-service/        # File upload and metadata service
@@ -151,6 +172,12 @@ quickresolve/
 │   ├── main.py              # FastAPI application
 │   ├── requirements.txt     # Python dependencies
 │   └── Dockerfile           # Service container
+├── ai-agent-service/        # AI customer service chatbot
+│   ├── main.py              # FastAPI application
+│   ├── requirements.txt     # Python dependencies
+│   ├── Dockerfile           # Service container
+│   ├── test_main.py         # Unit tests
+│   └── README.md            # Service documentation
 ├── data-generator/          # Sample data generation
 │   ├── generate_dataset.py  # Data generation script
 │   ├── requirements.txt     # Python dependencies
@@ -159,6 +186,8 @@ quickresolve/
 ├── minio_data/              # MinIO storage data
 ├── qdrant_storage/          # Qdrant vector database data
 ├── docker-compose.yml       # Service orchestration
+├── start-chat.sh           # Linux/Mac startup script
+├── start-chat.bat          # Windows startup script
 └── README.md               # This file
 ```
 

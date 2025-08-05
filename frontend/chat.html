@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Customer Service Chat</title>
+    <link rel="stylesheet" href="chat-style.css">
+</head>
+<body>
+    <div class="container">
+        <header class="chat-header">
+            <h1>🤖 AI Customer Service</h1>
+            <div class="workspace-selector">
+                <label for="workspaceSelect">Select Workspace:</label>
+                <select id="workspaceSelect">
+                    <option value="">Choose a workspace...</option>
+                </select>
+            </div>
+        </header>
+
+        <div class="chat-container">
+            <div class="chat-messages" id="chatMessages">
+                <div class="message system">
+                    <div class="message-content">
+                        Welcome! I'm your AI customer service assistant. Please select a workspace to get started.
+                    </div>
+                    <div class="message-time" id="currentTime"></div>
+                </div>
+            </div>
+
+            <div class="chat-input-container">
+                <div class="input-wrapper">
+                    <textarea 
+                        id="messageInput" 
+                        placeholder="Type your message here..." 
+                        rows="1"
+                        disabled
+                    ></textarea>
+                    <button id="sendButton" disabled>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M22 2L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="chat-sidebar">
+            <div class="sidebar-section">
+                <h3>📋 Conversation Info</h3>
+                <div class="info-item">
+                    <strong>Workspace:</strong>
+                    <span id="currentWorkspace">None selected</span>
+                </div>
+                <div class="info-item">
+                    <strong>Messages:</strong>
+                    <span id="messageCount">0</span>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h3>🔍 Recent Sources</h3>
+                <div id="recentSources" class="sources-list">
+                    <p class="no-sources">No sources yet</p>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <button id="clearChat" class="clear-button">Clear Conversation</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="chat.js"></script>
+</body>
+</html> 

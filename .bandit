@@ -1,0 +1,3 @@
+[bandit]
+exclude_dirs = ["tests", "test_*", "*_test.py"]
+skips = ["B101"]  # Skip assert_used check for test files 

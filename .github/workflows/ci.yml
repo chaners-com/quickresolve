@@ -89,7 +89,7 @@ jobs:
         python -m pytest tests/ -v --cov=. --cov-report=xml || echo "Tests completed with warnings"
 
     - name: Upload coverage reports
-      uses: codecov/codecov-action@v4
+      uses: codecov/codecov-action@v5
       with:
         files: ./ingestion-service/coverage.xml,./embedding-service/coverage.xml
         fail_ci_if_error: false

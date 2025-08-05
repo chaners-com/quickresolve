@@ -9,11 +9,13 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     workspaces = relationship("Workspace", back_populates="owner")
+
 
 class Workspace(Base):
     __tablename__ = "workspaces"
@@ -22,6 +24,7 @@ class Workspace(Base):
     owner_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User", back_populates="workspaces")
     files = relationship("File", back_populates="workspace")
+
 
 class File(Base):
     __tablename__ = "files"

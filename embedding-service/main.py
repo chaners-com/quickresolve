@@ -10,15 +10,19 @@ from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 # --- Pydantic Models ---
+
+
 class FileInfo(BaseModel):
     s3_key: str
     file_id: int
     workspace_id: int
 
+
 class SearchResult(BaseModel):
     id: int
     payload: Optional[dict] = None
     score: float
+
 
 # --- App and Clients Setup ---
 app = FastAPI()
@@ -45,6 +49,8 @@ S3_BUCKET = os.getenv("S3_BUCKET")
 QDRANT_COLLECTION_NAME = "file_embeddings"
 
 # --- Startup Event to Ensure Qdrant Collection Exists ---
+
+
 @app.on_event("startup")
 def startup_event():
     # Wait for Qdrant to be ready
@@ -58,7 +64,7 @@ def startup_event():
             print("Qdrant not ready, waiting...")
             time.sleep(5)
             retries -= 1
-    
+
     if retries == 0:
         print("Could not connect to Qdrant. Exiting.")
         exit(1)
@@ -68,10 +74,15 @@ def startup_event():
     except (UnexpectedResponse, Exception):
         qdrant_client.recreate_collection(
             collection_name=QDRANT_COLLECTION_NAME,
-            vectors_config=models.VectorParams(size=768, distance=models.Distance.COSINE),
+            vectors_config=models.VectorParams(
+                size=768, distance=models.Distance.COSINE
+            ),
         )
 
+
 # --- API Endpoints ---
+
+
 @app.post("/embed/")
 async def embed_file(file_info: FileInfo):
     """Downloads a file, generates embeddings, and stores them in Qdrant."""
@@ -79,7 +90,9 @@ async def embed_file(file_info: FileInfo):
         response = s3.get_object(Bucket=S3_BUCKET, Key=file_info.s3_key)
         file_content = response['Body'].read().decode('utf-8')
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to download from S3: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to download from S3: {e}"
+        )
 
     try:
         embedding = genai.embed_content(
@@ -88,7 +101,9 @@ async def embed_file(file_info: FileInfo):
             task_type="retrieval_document"
         )["embedding"]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate embedding: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate embedding: {e}"
+        )
 
     try:
         qdrant_client.upsert(
@@ -97,15 +112,21 @@ async def embed_file(file_info: FileInfo):
                 models.PointStruct(
                     id=file_info.file_id,
                     vector=embedding,
-                    payload={"workspace_id": file_info.workspace_id, "s3_key": file_info.s3_key}
+                    payload={
+                        "workspace_id": file_info.workspace_id,
+                        "s3_key": file_info.s3_key
+                    }
                 )
             ],
             wait=True,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to upsert to Qdrant: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to upsert to Qdrant: {e}"
+        )
 
     return {"message": f"Successfully embedded file {file_info.s3_key}"}
+
 
 @app.get("/search/", response_model=list[SearchResult])
 async def search(query: str, workspace_id: int, top_k: int = 5):
@@ -117,7 +138,9 @@ async def search(query: str, workspace_id: int, top_k: int = 5):
             task_type="retrieval_query"
         )["embedding"]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate query embedding: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate query embedding: {e}"
+        )
 
     try:
         search_results = qdrant_client.search(
@@ -125,14 +148,22 @@ async def search(query: str, workspace_id: int, top_k: int = 5):
             query_vector=query_embedding,
             query_filter=models.Filter(
                 must=[
-                    models.FieldCondition(key="workspace_id", match=models.MatchValue(value=workspace_id))
+                    models.FieldCondition(
+                        key="workspace_id",
+                        match=models.MatchValue(value=workspace_id)
+                    )
                 ]
             ),
             limit=top_k,
             with_payload=True
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to search in Qdrant: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to search in Qdrant: {e}"
+        )
 
-    results = [SearchResult(id=hit.id, payload=hit.payload, score=hit.score) for hit in search_results]
+    results = [
+        SearchResult(id=hit.id, payload=hit.payload, score=hit.score)
+        for hit in search_results
+    ]
     return results 

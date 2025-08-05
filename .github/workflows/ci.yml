@@ -166,7 +166,7 @@ jobs:
         safety check --json --output safety-report.json || echo "Safety check completed"
 
     - name: Upload safety report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: safety-report

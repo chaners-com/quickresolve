@@ -41,7 +41,7 @@ We welcome contributions from the community! Here are several ways you can contr
 
 1. **Clone your fork**:
    ```bash
-   git clone https://github.com/your-username/quickresolve.git
+   git clone https://github.com/chaners-com/quickresolve.git
    cd quickresolve
    ```
 

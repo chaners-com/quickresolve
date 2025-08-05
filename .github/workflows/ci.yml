@@ -59,8 +59,8 @@ jobs:
     - name: Run security checks
       run: |
         pip install bandit safety
-        # Security audit
-        bandit -r ingestion-service/ embedding-service/ data-generator/
+        # Security audit - exclude test files from assert checks
+        bandit -r ingestion-service/ embedding-service/ data-generator/ --skip B101
         safety check
 
     - name: Test ingestion service

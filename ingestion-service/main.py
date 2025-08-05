@@ -1,14 +1,17 @@
-from fastapi import FastAPI, UploadFile, Depends, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import OperationalError
-from sqlalchemy import text  # Import text function
-import boto3
 import os
-import requests
 import time
-from database import SessionLocal, engine, Base, User, Workspace, File as DBFile
+
+import boto3
+import requests
+from database import Base
+from database import File as DBFile
+from database import SessionLocal, User, Workspace, engine
+from fastapi import Depends, FastAPI, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import text  # Import text function
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 # --- Improved Pydantic Models ---
 
@@ -81,10 +84,10 @@ def on_startup():
 
     # Initialize S3 client
     s3 = boto3.client(
-        's3',
+        "s3",
         endpoint_url=S3_ENDPOINT,
         aws_access_key_id=S3_ACCESS_KEY,
-        aws_secret_access_key=S3_SECRET_KEY
+        aws_secret_access_key=S3_SECRET_KEY,
     )
 
     # Wait for the database to be ready
@@ -123,7 +126,9 @@ def on_startup():
 async def create_upload_file(
     file: UploadFile, workspace_id: int, db: Session = Depends(get_db)
 ):
-    workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+    workspace = (
+        db.query(Workspace).filter(Workspace.id == workspace_id).first()
+    )
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
@@ -157,19 +162,15 @@ async def create_upload_file(
             json={
                 "s3_key": s3_key,
                 "file_id": db_file.id,
-                "workspace_id": workspace_id
-            }
+                "workspace_id": workspace_id,
+            },
         )
     except requests.exceptions.RequestException:
         # In a real app, you might want a retry mechanism or a more robust way
         # to handle the embedding service being temporarily unavailable.
         print("Failed to trigger embedding service")
 
-    return {
-        "filename": file.filename,
-        "s3_key": s3_key,
-        "id": db_file.id
-    }
+    return {"filename": file.filename, "s3_key": s3_key, "id": db_file.id}
 
 
 @app.get("/file-content/")
@@ -179,12 +180,11 @@ def get_file_content(s3_key: str):
     """
     try:
         response = s3.get_object(Bucket=S3_BUCKET, Key=s3_key)
-        file_content = response['Body'].read().decode('utf-8')
+        file_content = response["Body"].read().decode("utf-8")
         return {"content": file_content}
     except Exception as e:
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve file from S3: {e}"
+            status_code=500, detail=f"Failed to retrieve file from S3: {e}"
         )
 
 
@@ -199,7 +199,9 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     if existing_user:
         raise HTTPException(
             status_code=409,  # Conflict
-            detail="Username already registered. Please choose a different one.",
+            detail=(
+                "Username already registered. Please choose a different one."
+            ),
         )
 
     db_user = User(**user.model_dump())
@@ -227,7 +229,7 @@ def create_workspace(
     if not owner:
         raise HTTPException(
             status_code=404,
-            detail=f"User with id {workspace.owner_id} not found"
+            detail=f"User with id {workspace.owner_id} not found",
         )
 
     db_workspace = Workspace(**workspace.model_dump())
@@ -245,7 +247,9 @@ def get_workspace_by_name(
     Looks up a workspace by its exact name for a specific owner.
     Returns a list containing the workspace if found, otherwise an empty list.
     """
-    workspace = db.query(Workspace).filter(
-        Workspace.name == name, Workspace.owner_id == owner_id
-    ).first()
+    workspace = (
+        db.query(Workspace)
+        .filter(Workspace.name == name, Workspace.owner_id == owner_id)
+        .first()
+    )
     return [workspace] if workspace else []

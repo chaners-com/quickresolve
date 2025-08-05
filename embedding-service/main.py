@@ -1,11 +1,12 @@
+import os
+import time
+from typing import Optional
+
+import boto3
+import google.generativeai as genai
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
-import time
-import boto3
-import os
-import google.generativeai as genai
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 
@@ -40,10 +41,10 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 embedding_model = "models/embedding-001"
 
 s3 = boto3.client(
-    's3',
+    "s3",
     endpoint_url=os.getenv("S3_ENDPOINT"),
     aws_access_key_id=os.getenv("S3_ACCESS_KEY"),
-    aws_secret_access_key=os.getenv("S3_SECRET_KEY")
+    aws_secret_access_key=os.getenv("S3_SECRET_KEY"),
 )
 S3_BUCKET = os.getenv("S3_BUCKET")
 QDRANT_COLLECTION_NAME = "file_embeddings"
@@ -88,7 +89,7 @@ async def embed_file(file_info: FileInfo):
     """Downloads a file, generates embeddings, and stores them in Qdrant."""
     try:
         response = s3.get_object(Bucket=S3_BUCKET, Key=file_info.s3_key)
-        file_content = response['Body'].read().decode('utf-8')
+        file_content = response["Body"].read().decode("utf-8")
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to download from S3: {e}"
@@ -98,7 +99,7 @@ async def embed_file(file_info: FileInfo):
         embedding = genai.embed_content(
             model=embedding_model,
             content=file_content,
-            task_type="retrieval_document"
+            task_type="retrieval_document",
         )["embedding"]
     except Exception as e:
         raise HTTPException(
@@ -114,8 +115,8 @@ async def embed_file(file_info: FileInfo):
                     vector=embedding,
                     payload={
                         "workspace_id": file_info.workspace_id,
-                        "s3_key": file_info.s3_key
-                    }
+                        "s3_key": file_info.s3_key,
+                    },
                 )
             ],
             wait=True,
@@ -130,12 +131,11 @@ async def embed_file(file_info: FileInfo):
 
 @app.get("/search/", response_model=list[SearchResult])
 async def search(query: str, workspace_id: int, top_k: int = 5):
-    """Embeds a query and searches for similar vectors in a specific workspace."""
+    """Embeds a query and searches for similar vectors in a specific \
+workspace."""
     try:
         query_embedding = genai.embed_content(
-            model=embedding_model,
-            content=query,
-            task_type="retrieval_query"
+            model=embedding_model, content=query, task_type="retrieval_query"
         )["embedding"]
     except Exception as e:
         raise HTTPException(
@@ -150,12 +150,12 @@ async def search(query: str, workspace_id: int, top_k: int = 5):
                 must=[
                     models.FieldCondition(
                         key="workspace_id",
-                        match=models.MatchValue(value=workspace_id)
+                        match=models.MatchValue(value=workspace_id),
                     )
                 ]
             ),
             limit=top_k,
-            with_payload=True
+            with_payload=True,
         )
     except Exception as e:
         raise HTTPException(

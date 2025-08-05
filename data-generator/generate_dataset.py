@@ -1,18 +1,20 @@
 import os
-import google.generativeai as genai
 import time
 from pathlib import Path
 
+import google.generativeai as genai
+
 # Configure the Gemini API
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 
 def generate_customer_service_ticket(ticket_number):
     """Generate a single customer service ticket using Gemini API."""
 
     prompt = f"""
-    Create a realistic customer service ticket #{ticket_number:03d} in Markdown format.
+    Create a realistic customer service ticket #{ticket_number:03d} in \
+    Markdown format.
     This should be a fake but believable customer service issue and resolution.
 
     The file should include:
@@ -23,7 +25,8 @@ def generate_customer_service_ticket(ticket_number):
     - Relevant keywords/tags
 
     Make it sound like a real customer service ticket from a tech company.
-    Include specific details like email addresses, error messages, product names, etc.
+    Include specific details like email addresses, error messages, product \
+names, etc.
     Keep it between 20-50 lines.
 
     Format it as a clean Markdown file with headers and bullet points.
@@ -60,7 +63,7 @@ def main():
             filepath = output_dir / filename
 
             # Write content to file
-            with open(filepath, 'w', encoding='utf-8') as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 f.write(content)
 
             successful_generations += 1
@@ -77,4 +80,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()

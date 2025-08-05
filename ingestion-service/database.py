@@ -32,4 +32,4 @@ class File(Base):
     name = Column(String, index=True)
     s3_key = Column(String, unique=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"))
-    workspace = relationship("Workspace", back_populates="files") 
+    workspace = relationship("Workspace", back_populates="files")

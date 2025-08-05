@@ -166,4 +166,4 @@ async def search(query: str, workspace_id: int, top_k: int = 5):
         SearchResult(id=hit.id, payload=hit.payload, score=hit.score)
         for hit in search_results
     ]
-    return results 
+    return results

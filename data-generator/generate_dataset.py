@@ -71,7 +71,7 @@ def main():
         # Add a small delay to be respectful to the API
         time.sleep(1)
 
-    print(f"\nDataset generation complete!")
+    print("\nDataset generation complete!")
     print(f"Successfully generated {successful_generations}/100 files")
     print(f"Files saved in: {output_dir.absolute()}")
 

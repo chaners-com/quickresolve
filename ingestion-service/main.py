@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
-from sqlalchemy import text  # Import the text function
+from sqlalchemy import text  # Import text function
 import boto3
 import os
 import requests
@@ -93,7 +93,7 @@ def on_startup():
         try:
             # Try to connect to the database
             db = SessionLocal()
-            db.execute(text("SELECT 1"))  # Use the text() function
+            db.execute(text("SELECT 1"))  # Use text() function
             db.close()
             print("Database is ready.")
             break
@@ -193,7 +193,9 @@ def get_file_content(s3_key: str):
 
 @app.post("/users/", response_model=UserResponse, status_code=201)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.username == user.username).first()
+    existing_user = (
+        db.query(User).filter(User.username == user.username).first()
+    )
     if existing_user:
         raise HTTPException(
             status_code=409,  # Conflict
@@ -218,7 +220,9 @@ def get_user_by_name(username: str, db: Session = Depends(get_db)):
 
 
 @app.post("/workspaces/", response_model=WorkspaceResponse, status_code=201)
-def create_workspace(workspace: WorkspaceCreate, db: Session = Depends(get_db)):
+def create_workspace(
+    workspace: WorkspaceCreate, db: Session = Depends(get_db)
+):
     owner = db.query(User).filter(User.id == workspace.owner_id).first()
     if not owner:
         raise HTTPException(
@@ -244,4 +248,4 @@ def get_workspace_by_name(
     workspace = db.query(Workspace).filter(
         Workspace.name == name, Workspace.owner_id == owner_id
     ).first()
-    return [workspace] if workspace else [] 
+    return [workspace] if workspace else []

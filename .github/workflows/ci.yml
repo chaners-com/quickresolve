@@ -107,22 +107,22 @@ jobs:
     - name: Build and test Docker images
       run: |
         # Build all images to ensure they build successfully
-        docker-compose build
+        docker compose build
         
         # Test that images can start (basic health check)
-        docker-compose up -d db minio qdrant
+        docker compose up -d db minio qdrant
         sleep 10
         
         # Test ingestion service
-        docker-compose build ingestion-service
+        docker compose build ingestion-service
         docker run --rm --network host quickresolve_ingestion-service:latest python -c "print('Ingestion service image test passed')"
         
         # Test embedding service
-        docker-compose build embedding-service
+        docker compose build embedding-service
         docker run --rm --network host quickresolve_embedding-service:latest python -c "print('Embedding service image test passed')"
         
         # Test frontend
-        docker-compose build frontend
+        docker compose build frontend
         docker run --rm quickresolve_frontend:latest nginx -t
 
   security-scan:

@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-qdrant-client==1.9.0
+qdrant-client==1.15.1
 boto3
 google-generativeai
 # Testing dependencies

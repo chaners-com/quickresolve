@@ -1,8 +1,3 @@
-# Data directories
-minio_data/
-qdrant_storage/
-customer_service_data/
-
 # Environment files
 .env
 .env.local
@@ -60,4 +55,24 @@ logs/
 
 # Temporary files
 *.tmp
-*.temp 
+*.temp
+
+# Data directories - INCLUDED for remote access
+# These directories contain important data that should be available from any remote location
+# Uncomment the lines below if you want to exclude them from Git tracking
+
+# Qdrant vector database storage - INCLUDED
+# qdrant_storage/
+
+# MinIO object storage data - INCLUDED  
+# minio_data/
+
+# Customer service data - INCLUDED
+# customer_service_data/
+
+# Qdrant snapshots - INCLUDED
+# qdrant_snapshots/
+
+# Note: The above data directories are currently INCLUDED in Git tracking
+# to ensure they are available from any remote location.
+# If you want to exclude them (e.g., for large repositories), uncomment the lines above. 

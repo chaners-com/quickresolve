@@ -22,6 +22,10 @@ The application consists of the following microservices:
 - **Qdrant**: Vector database for storing and searching embeddings
 - **MinIO**: S3-compatible object storage for file storage
 
+### Management & Operations Services
+- **Management Service** (`management-service/`): Containerized service for graceful shutdown orchestration and service management
+- **Snapshot Service** (`snapshot-service/`): Containerized service for continuous Qdrant data backups and restoration
+
 ## 🛠️ Technology Stack
 
 - **Backend**: FastAPI (Python)
@@ -39,7 +43,7 @@ Before running QuickResolve, ensure you have:
 - Docker and Docker Compose installed
 - A Google Gemini API key
 - At least 4GB of available RAM
-- Ports 8080, 8000, 8001, 5432, 6333, 9000, 9001 available
+- Ports 8080, 8000, 8001, 8002, 8003, 8004, 5432, 6333, 9000, 9001 available
 
 ## 🔧 Environment Variables
 
@@ -76,10 +80,10 @@ Create a `.env` file with your configuration (see Environment Variables section 
 ### 3. Start the Application
 
 ```bash
-# Start all services
+# Start all services (recommended)
 docker-compose up -d
 
-# Or start with data generation
+# Start with data generation
 docker-compose --profile generate-data up -d
 ```
 
@@ -91,6 +95,8 @@ docker-compose --profile generate-data up -d
 - **Ingestion Service API**: http://localhost:8000
 - **Embedding Service API**: http://localhost:8001
 - **AI Agent Service API**: http://localhost:8002
+- **Snapshot Service API**: http://localhost:8003
+- **Management Service API**: http://localhost:8004
 - **Qdrant**: http://localhost:6333
 
 ## 📖 Usage Guide
@@ -127,6 +133,232 @@ docker-compose --profile generate-data up data-generator
 
 This will create 100 sample tickets in the `customer_service_data/` directory.
 
+## 🏗️ Container Architecture & Services
+
+QuickResolve uses a microservices architecture with 9 main containers, each serving a specific purpose:
+
+### 🔧 Core Application Services
+
+#### **Frontend Container** (`frontend`)
+- **Purpose**: Web-based user interface for document upload, search, and AI chat
+- **Technology**: Nginx + HTML/CSS/JavaScript
+- **Port**: 8080
+- **Features**: 
+  - File upload interface
+  - Document search interface
+  - AI chat interface
+  - Responsive design
+  - Service resilience (handles backend unavailability gracefully)
+
+#### **Ingestion Service Container** (`ingestion-service`)
+- **Purpose**: Handles file uploads, metadata management, and database operations
+- **Technology**: FastAPI (Python)
+- **Port**: 8000
+- **Features**:
+  - File upload processing
+  - User and workspace management
+  - PostgreSQL database integration
+  - MinIO file storage integration
+  - RESTful API endpoints
+
+#### **Embedding Service Container** (`embedding-service`)
+- **Purpose**: Generates AI embeddings for documents using Google Gemini
+- **Technology**: FastAPI (Python) + Google Gemini AI
+- **Port**: 8001
+- **Features**:
+  - Document text extraction
+  - AI embedding generation
+  - Qdrant vector database integration
+  - Semantic search capabilities
+  - MinIO file access
+
+#### **AI Agent Service Container** (`ai-agent-service`)
+- **Purpose**: AI-powered customer service chatbot with document context
+- **Technology**: FastAPI (Python) + Google Gemini AI
+- **Port**: 8002
+- **Features**:
+  - Conversational AI interface
+  - Document-aware responses
+  - Context retrieval from Qdrant
+  - Multi-workspace support
+  - Source attribution
+
+### 🗄️ Infrastructure Services
+
+#### **PostgreSQL Container** (`db`)
+- **Purpose**: Primary relational database for metadata storage
+- **Technology**: PostgreSQL 13
+- **Port**: 5432
+- **Features**:
+  - User management
+  - Workspace management
+  - File metadata storage
+  - ACID compliance
+  - Persistent data storage
+
+#### **Qdrant Container** (`qdrant`)
+- **Purpose**: Vector database for AI embeddings and semantic search
+- **Technology**: Qdrant v1.9.0
+- **Port**: 6333
+- **Features**:
+  - High-dimensional vector storage
+  - Semantic similarity search
+  - Data integrity protection (WAL sync)
+  - Graceful shutdown support
+  - Persistent storage
+
+#### **MinIO Container** (`minio`)
+- **Purpose**: S3-compatible object storage for document files
+- **Technology**: MinIO
+- **Ports**: 9000 (API), 9001 (Console)
+- **Features**:
+  - S3-compatible API
+  - Web-based management console
+  - File versioning
+  - Access control
+  - Persistent storage
+
+### 🛠️ Management & Operations Services
+
+#### **Management Service Container** (`management-service`)
+- **Purpose**: Orchestrates graceful shutdowns and service management
+- **Technology**: FastAPI (Python) + Docker SDK
+- **Port**: 8004
+- **Features**:
+  - **Graceful Shutdown Orchestration**: Stops services in proper dependency order
+  - **Service Health Monitoring**: Real-time status of all containers
+  - **Container Management**: Start, stop, restart individual services
+  - **Docker Integration**: Direct access to Docker daemon via socket
+  - **REST API**: Programmatic control and monitoring
+  - **CLI Interface**: User-friendly command-line tool (`quickresolve-cli.py`)
+
+#### **Snapshot Service Container** (`snapshot-service`)
+- **Purpose**: Continuous backup and restoration of Qdrant data
+- **Technology**: FastAPI (Python)
+- **Port**: 8003
+- **Features**:
+  - **Automatic Snapshots**: Every 5 minutes (configurable)
+  - **Dual Backup Methods**: API snapshots + filesystem backups
+  - **Retention Management**: Keeps latest 10 snapshots (configurable)
+  - **Easy Restoration**: One-command snapshot restoration
+  - **REST API**: Programmatic snapshot management
+  - **CLI Interface**: User-friendly backup operations
+  - **Health Monitoring**: Built-in health checks
+
+### 🔄 Data Generation Service
+
+#### **Data Generator Container** (`data-generator`)
+- **Purpose**: Generates sample customer service data for testing
+- **Technology**: Python + Google Gemini AI
+- **Profile**: `generate-data` (optional)
+- **Features**:
+  - AI-generated sample tickets
+  - Realistic customer service scenarios
+  - Configurable data volume
+  - Testing and development support
+
+## 🛑 Graceful Shutdown
+
+QuickResolve includes a containerized management service that handles graceful shutdowns automatically:
+
+### Using the CLI Tool
+```bash
+# Show all services status
+python quickresolve-cli.py status
+
+# Graceful shutdown with confirmation
+python quickresolve-cli.py shutdown
+
+# Force shutdown (no confirmation)
+python quickresolve-cli.py shutdown --force
+
+# Restart a specific service
+python quickresolve-cli.py restart qdrant
+```
+
+### Using the Management API
+```bash
+# Check service health
+curl http://localhost:8004/health
+
+# Graceful shutdown
+curl -X POST http://localhost:8004/shutdown
+
+# Get service status
+curl http://localhost:8004/services
+```
+
+### Why Use Graceful Shutdown?
+
+- **Data Integrity**: Ensures Qdrant flushes all pending writes to disk
+- **No Corruption**: Prevents corrupted WAL (Write-Ahead Log) files
+- **Proper Order**: Stops services in reverse dependency order
+- **Extended Timeouts**: Gives Qdrant extra time to complete operations
+- **Containerized**: Fully integrated with Docker ecosystem
+
+### Manual Shutdown (Not Recommended)
+If you must stop services manually:
+```bash
+# Stop with grace period
+docker-compose stop -t 30
+
+# Check service status
+docker-compose ps
+```
+
+**⚠️ Warning**: Avoid using `docker-compose down` or force-killing containers as this may corrupt Qdrant data files.
+
+## 📸 Continuous Snapshots
+
+QuickResolve includes a containerized snapshot service that automatically backs up Qdrant data:
+
+### Using the CLI Tool
+```bash
+# Create a new snapshot
+python quickresolve-cli.py snapshot create
+
+# List available snapshots
+python quickresolve-cli.py snapshot list
+
+# Download a snapshot
+python quickresolve-cli.py snapshot download qdrant_snapshot_20231201_120000.tar.gz
+
+# Restore from snapshot
+python quickresolve-cli.py snapshot restore qdrant_snapshot_20231201_120000.tar.gz
+
+# Clean up old snapshots
+python quickresolve-cli.py snapshot cleanup
+```
+
+### Using the Snapshot API
+```bash
+# Check snapshot service health
+curl http://localhost:8003/health
+
+# Create snapshot
+curl -X POST http://localhost:8003/snapshots
+
+# List snapshots
+curl http://localhost:8003/snapshots
+
+# Download snapshot
+curl http://localhost:8003/snapshots/qdrant_snapshot_20231201_120000.tar.gz -o backup.tar.gz
+```
+
+### Automatic Snapshots
+The snapshot service runs automatically in the background:
+- **Interval**: Every 5 minutes (configurable)
+- **Retention**: Latest 10 snapshots (configurable)
+- **Methods**: API snapshots with filesystem fallback
+- **Storage**: Persistent volume mounted to host
+
+**Features:**
+- **Containerized**: Fully integrated with Docker ecosystem
+- **REST API**: Programmatic access to all snapshot operations
+- **Health Monitoring**: Built-in health checks and monitoring
+- **Automatic Cleanup**: Configurable retention policies
+- **Easy Restoration**: One-command snapshot restoration
+
 ## 🔍 API Endpoints
 
 ### Ingestion Service (Port 8000)
@@ -149,6 +381,87 @@ This will create 100 sample tickets in the `customer_service_data/` directory.
 - `GET /workspaces` - Get available workspaces
 - `POST /conversation` - Handle conversation with AI assistant
 - `GET /search/{workspace_id}` - Search documents in specific workspace
+
+### Snapshot Service (Port 8003)
+
+- `GET /health` - Service health check
+- `POST /snapshots` - Create new snapshot
+- `GET /snapshots` - List all snapshots
+- `GET /snapshots/{filename}` - Download specific snapshot
+- `POST /snapshots/{filename}/restore` - Restore from snapshot
+- `DELETE /snapshots/{filename}` - Delete snapshot
+- `POST /cleanup` - Clean up old snapshots
+
+### Management Service (Port 8004)
+
+- `GET /health` - Overall system health check
+- `GET /services` - Get status of all services
+- `GET /services/{name}` - Get specific service status
+- `POST /shutdown` - Graceful shutdown of all services
+- `POST /services/start` - Start services
+- `POST /services/{name}/restart` - Restart specific service
+- `GET /services/{name}/health` - Check service health
+
+## 🖥️ Command Line Interface (CLI)
+
+QuickResolve includes a powerful CLI tool (`quickresolve-cli.py`) for easy management:
+
+### Installation
+```bash
+# No installation required - runs directly with Python
+python quickresolve-cli.py --help
+```
+
+### CLI Commands
+
+#### **Service Management**
+```bash
+# Check status of all services
+python quickresolve-cli.py status
+
+# Get detailed status of specific service
+python quickresolve-cli.py status qdrant
+
+# Restart a service
+python quickresolve-cli.py restart ai-agent-service
+
+# Start all services
+python quickresolve-cli.py start
+```
+
+#### **Graceful Shutdown**
+```bash
+# Graceful shutdown with confirmation
+python quickresolve-cli.py shutdown
+
+# Force shutdown (no confirmation)
+python quickresolve-cli.py shutdown --force
+```
+
+#### **Snapshot Management**
+```bash
+# Create a new snapshot
+python quickresolve-cli.py snapshot create
+
+# List all snapshots
+python quickresolve-cli.py snapshot list
+
+# Download a snapshot
+python quickresolve-cli.py snapshot download qdrant_snapshot_20231201_120000.tar.gz
+
+# Restore from snapshot
+python quickresolve-cli.py snapshot restore qdrant_snapshot_20231201_120000.tar.gz
+
+# Clean up old snapshots
+python quickresolve-cli.py snapshot cleanup
+```
+
+### CLI Features
+- **User-Friendly**: Simple commands with helpful output
+- **Error Handling**: Graceful error handling with clear messages
+- **JSON Output**: Structured output for programmatic use
+- **Help System**: Built-in help for all commands
+- **Service Discovery**: Automatically finds and manages all containers
 
 ## 🏗️ Project Structure
 
@@ -182,10 +495,22 @@ quickresolve/
 │   ├── generate_dataset.py  # Data generation script
 │   ├── requirements.txt     # Python dependencies
 │   └── Dockerfile           # Generator container
+├── snapshot-service/        # Containerized snapshot service
+│   ├── Dockerfile          # Snapshot service container
+│   ├── requirements.txt    # Python dependencies
+│   ├── snapshot_service.py # Main snapshot service
+│   └── config.py           # Snapshot service configuration
+├── management-service/      # Containerized management service
+│   ├── Dockerfile          # Management service container
+│   ├── requirements.txt    # Python dependencies
+│   ├── management_service.py # Main management service
+│   └── config.py           # Management service configuration
 ├── customer_service_data/   # Generated sample data
 ├── minio_data/              # MinIO storage data
 ├── qdrant_storage/          # Qdrant vector database data
+├── qdrant_snapshots/        # Snapshot backups
 ├── docker-compose.yml       # Service orchestration
+├── quickresolve-cli.py     # CLI tool for management
 ├── start-chat.sh           # Linux/Mac startup script
 ├── start-chat.bat          # Windows startup script
 └── README.md               # This file

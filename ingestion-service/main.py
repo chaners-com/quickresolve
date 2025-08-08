@@ -6,7 +6,7 @@ import requests
 from database import Base
 from database import File as DBFile
 from database import SessionLocal, User, Workspace, engine
-from fastapi import Depends, FastAPI, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text  # Import text function
@@ -33,6 +33,11 @@ class WorkspaceCreate(BaseModel):
 class WorkspaceResponse(WorkspaceCreate):
     id: int
     model_config = ConfigDict(from_attributes=True)
+
+
+class FileStatusResponse(BaseModel):
+    file_id: int
+    status: int
 
 
 app = FastAPI()
@@ -148,7 +153,7 @@ async def create_upload_file(
     if not db_file:
         # Create a new file record if it doesn't exist
         db_file = DBFile(
-            name=file.filename, s3_key=s3_key, workspace_id=workspace_id
+            name=file.filename, s3_key=s3_key, workspace_id=workspace_id, status=1
         )
         db.add(db_file)
         db.commit()
@@ -171,7 +176,7 @@ async def create_upload_file(
         # to handle the embedding service being temporarily unavailable.
         print("Failed to trigger embedding service")
 
-    return {"filename": file.filename, "s3_key": s3_key, "id": db_file.id}
+    return {"filename": file.filename, "s3_key": s3_key, "id": db_file.id, "status": db_file.status}
 
 
 @app.get("/file-content/")
@@ -254,3 +259,29 @@ def get_workspace_by_name(
         .first()
     )
     return [workspace] if workspace else []
+
+
+# --- File Status Endpoints ---
+
+
+@app.get("/files/{file_id}/status", response_model=FileStatusResponse)
+def get_file_status(file_id: int, db: Session = Depends(get_db)):
+    file = db.query(DBFile).filter(DBFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileStatusResponse(file_id=file.id, status=file.status)
+
+
+@app.put("/files/{file_id}/status", response_model=FileStatusResponse)
+def update_file_status(
+    file_id: int,
+    status: int = Query(..., ge=1, le=2),
+    db: Session = Depends(get_db)
+):
+    file = db.query(DBFile).filter(DBFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    file.status = status
+    db.commit()
+    db.refresh(file)
+    return FileStatusResponse(file_id=file.id, status=file.status)

@@ -142,7 +142,7 @@ button:disabled {
     border-left: 4px solid #007bff;
 }
 
-#uploadMessage, #workspaceMessage {
+#uploadMessage, #workspaceMessage, #overallStatus {
     margin-top: 1rem;
     padding: 0.75rem;
     border-radius: 4px;
@@ -159,6 +159,12 @@ button:disabled {
     background-color: #d1ecf1;
     color: #0c5460;
     border: 1px solid #bee5eb;
+}
+
+#overallStatus {
+    background-color: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
 }
 
 .error {

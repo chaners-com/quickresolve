@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
+import requests
 
 # --- Pydantic Models ---
 
@@ -48,6 +49,8 @@ s3 = boto3.client(
 )
 S3_BUCKET = os.getenv("S3_BUCKET")
 QDRANT_COLLECTION_NAME = "file_embeddings"
+
+INGESTION_SERVICE_URL = os.getenv("INGESTION_SERVICE_URL", "http://ingestion-service:8000")
 
 # --- Startup Event to Ensure Qdrant Collection Exists ---
 
@@ -125,6 +128,17 @@ async def embed_file(file_info: FileInfo):
         raise HTTPException(
             status_code=500, detail=f"Failed to upsert to Qdrant: {e}"
         )
+
+    # Mark file as Done (2) in ingestion-service
+    try:
+        requests.put(
+            f"{INGESTION_SERVICE_URL}/files/{file_info.file_id}/status",
+            params={"status": 2},
+            timeout=10,
+        )
+    except Exception as e:
+        # Log but don't fail the embedding request
+        print(f"Warning: failed to update file status for {file_info.file_id}: {e}")
 
     return {"message": f"Successfully embedded file {file_info.s3_key}"}
 

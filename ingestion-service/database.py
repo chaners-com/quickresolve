@@ -1,6 +1,6 @@
 import os
 
-from sqlalchemy import Column, ForeignKey, Integer, String, create_engine
+from sqlalchemy import Column, ForeignKey, Integer, String, SmallInteger, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 
@@ -40,3 +40,4 @@ class File(Base):
     s3_key = Column(String, unique=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"))
     workspace = relationship("Workspace", back_populates="files")
+    status = Column(SmallInteger, nullable=False, default=1)

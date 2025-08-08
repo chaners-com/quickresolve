@@ -5,6 +5,7 @@ const uploadMessage = document.getElementById('uploadMessage');
 const workspaceMessage = document.getElementById('workspaceMessage');
 const resultsDiv = document.getElementById('results');
 const searchSection = document.getElementById('searchSection');
+const overallStatus = document.getElementById('overallStatus');
 
 let currentWorkspaceId; // To keep track of the active workspace for searching
 
@@ -28,6 +29,45 @@ async function handleRequest(url, options, errorMessage) {
             workspaceMessage.className = 'error';
         }
         return null;
+    }
+}
+
+function statusText(code) {
+    return code === 2 ? 'Done' : 'Processing';
+}
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function setOverall(done, total) {
+    if (!overallStatus) return;
+    overallStatus.className = '';
+    if (done === total) {
+        overallStatus.textContent = `Overall: Done ${done} of ${total}`;
+    } else {
+        let processing = total - done;
+        overallStatus.textContent = `Overall: Processing ${processing} / Done ${done} of ${total}`;
+    }
+}
+
+async function pollFileStatus(fileId, fileName) {
+    // initial display
+    uploadMessage.className = '';
+    uploadMessage.textContent = `Processing '${fileName}'...`;
+
+    while (true) {
+        const data = await handleRequest(
+            `http://localhost:8000/files/${fileId}/status`,
+            { method: 'GET' },
+            `Failed to fetch status for '${fileName}'`
+        );
+        if (!data) break; // stop on error
+
+        uploadMessage.textContent = `${fileName}: ${statusText(data.status)}`;
+        if (data.status === 2) break;
+
+        await sleep(1000);
     }
 }
 
@@ -273,7 +313,11 @@ uploadBtn.addEventListener('click', async () => {
     const workspace = await getOrCreateWorkspace(workspaceName, user.id);
     if (!workspace) return; // Stop if workspace creation failed
 
-    // 4. Upload the files sequentially
+    // 4. Upload the files sequentially + poll per-file + show overall
+    let doneCount = 0;
+    const totalFiles = files.length;
+    setOverall(doneCount, totalFiles);
+
     for (let i = 0; i < files.length; i++) {
         const file = files[i];
         uploadMessage.textContent = `Uploading file ${i + 1} of ${files.length}: '${file.name}'...`;
@@ -294,9 +338,17 @@ uploadBtn.addEventListener('click', async () => {
             uploadMessage.textContent += ' Halting upload process.';
             return; // Stop the batch if any file fails
         }
+        
+        // Poll until Done for this file
+        await pollFileStatus(uploadResult.id, file.name);
+
+        // Move from processing to done
+        doneCount += 1;
+        setOverall(doneCount, totalFiles);
     }
     
-    uploadMessage.textContent = `Successfully uploaded all ${files.length} files!`;
+    uploadMessage.textContent = `Successfully uploaded and processed all ${files.length} files!`;
+    uploadMessage.className = '';
 });
 
 // Event listeners

@@ -82,6 +82,7 @@ services:
       S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD}"
       S3_BUCKET: "${S3_BUCKET}"
       GEMINI_API_KEY: ${GEMINI_API_KEY}
+      INGESTION_SERVICE_URL: "${INGESTION_SERVICE_URL:-http://ingestion-service:8000}"
     restart: unless-stopped
 
   ai-agent-service:

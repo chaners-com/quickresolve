@@ -3,6 +3,7 @@ uvicorn
 qdrant-client==1.15.1
 boto3
 google-generativeai
+requests
 # Testing dependencies
 pytest>=7.0.0
 pytest-cov>=4.0.0

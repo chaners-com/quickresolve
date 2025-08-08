@@ -1,14 +1,21 @@
 import os
 import time
-from typing import List, Optional
+from typing import List, Optional, TypedDict, Any
 import json
+import requests
 
-import google.generativeai as genai
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
+
+# LangChain / LangGraph stack
+from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, AIMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.tools import tool
+from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolNode
 
 # --- Pydantic Models ---
 
@@ -43,120 +50,188 @@ app.add_middleware(
 )
 
 qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"))
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-embedding_model = "models/embedding-001"
-chat_model = genai.GenerativeModel('gemini-1.5-flash')
+
+# External services inside the docker-compose network
+EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "http://embedding-service:8001")
+INGESTION_SERVICE_URL = os.getenv("INGESTION_SERVICE_URL", "http://ingestion-service:8000")
+
+# LLM configured via LangChain
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    # Allow startup; requests will fail gracefully if used without key
+    print("Warning: GEMINI_API_KEY is not set. LLM calls will fail until configured.")
+llm = ChatGoogleGenerativeAI(
+    model="gemini-1.5-flash",
+    google_api_key=GEMINI_API_KEY,
+    temperature=0.2,
+)
 
 QDRANT_COLLECTION_NAME = "file_embeddings"
 
-# --- Startup Event to Ensure Qdrant Collection Exists ---
+# --- Startup Event ---
 
 @app.on_event("startup")
 def startup_event():
-    # Wait for Qdrant to be ready
-    retries = 10
-    while retries > 0:
-        try:
-            qdrant_client.get_collections()
-            print("Qdrant is ready.")
-            break
-        except (UnexpectedResponse, Exception):
-            print("Qdrant not ready, waiting...")
-            time.sleep(5)
-            retries -= 1
-
-    if retries == 0:
-        print("Could not connect to Qdrant. Exiting.")
-        exit(1)
-
+    # Qdrant is optional for this service because retrieval is delegated.
+    # If available, we log readiness; otherwise, we proceed without blocking.
     try:
-        qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
-    except (UnexpectedResponse, Exception):
-        print(f"Collection {QDRANT_COLLECTION_NAME} not found.")
+        if os.getenv("QDRANT_URL"):
+            qdrant_client.get_collections()
+            try:
+                qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
+                print("Qdrant collection accessible.")
+            except Exception:
+                print(f"Qdrant reachable but collection '{QDRANT_COLLECTION_NAME}' not found (delegated to embedding-service).")
+        else:
+            print("QDRANT_URL not set; retrieval delegated to embedding-service.")
+    except Exception as e:
+        print(f"Qdrant check skipped due to error: {e}. Continuing startup.")
 
 # --- Helper Functions ---
 
 def search_relevant_documents(query: str, workspace_id: int, top_k: int = 3) -> List[dict]:
-    """Search for relevant documents in the specified workspace."""
+    """Search for relevant documents for a workspace via the embedding service."""
     try:
-        query_embedding = genai.embed_content(
-            model=embedding_model, content=query, task_type="retrieval_query"
-        )["embedding"]
-    except Exception as e:
-        print(f"Failed to generate query embedding: {e}")
-        return []
-
-    try:
-        search_results = qdrant_client.search(
-            collection_name=QDRANT_COLLECTION_NAME,
-            query_vector=query_embedding,
-            query_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="workspace_id",
-                        match=models.MatchValue(value=workspace_id),
-                    )
-                ]
-            ),
-            limit=top_k,
-            with_payload=True,
+        resp = requests.get(
+            f"{EMBEDDING_SERVICE_URL}/search/",
+            params={"query": query, "workspace_id": workspace_id, "top_k": top_k},
+            timeout=15,
         )
-        
-        # Fetch the actual content from S3 or return metadata
-        results = []
-        for hit in search_results:
-            result = {
-                "id": hit.id,
-                "score": hit.score,
-                "s3_key": hit.payload.get("s3_key", ""),
-                "workspace_id": hit.payload.get("workspace_id", workspace_id)
-            }
-            results.append(result)
-        
-        return results
+        resp.raise_for_status()
+        results = resp.json()
+        # Normalize to internal dict shape
+        normalized: List[dict] = []
+        for hit in results:
+            payload = hit.get("payload") or {}
+            normalized.append(
+                {
+                    "id": hit.get("id"),
+                    "score": hit.get("score"),
+                    "s3_key": payload.get("s3_key", ""),
+                    "workspace_id": payload.get("workspace_id", workspace_id),
+                }
+            )
+        return normalized
     except Exception as e:
-        print(f"Failed to search in Qdrant: {e}")
+        print(f"Failed to search for relevant documents: {e}")
         return []
 
-def generate_response(messages: List[Message], relevant_docs: List[dict], workspace_id: int) -> str:
-    """Generate a response using the conversation history and relevant documents."""
-    
-    # Create context from relevant documents
-    context = ""
-    if relevant_docs:
-        context = "Based on the following relevant information:\n\n"
-        for i, doc in enumerate(relevant_docs, 1):
-            context += f"Document {i} (Relevance: {doc['score']:.2f}):\n"
-            context += f"File: {doc['s3_key']}\n\n"
-    
-    # Create the system prompt
-    system_prompt = f"""You are a helpful customer service AI assistant for workspace {workspace_id}. 
-Your role is to help users with their questions and issues based on the available documentation and knowledge base.
 
-{context}
-
-Please provide helpful, accurate, and professional responses. If you don't have enough information to answer a question, 
-be honest about it and suggest what additional information might be needed.
-
-Always be polite, patient, and try to provide actionable solutions when possible."""
-
-    # Prepare conversation for Gemini
-    conversation = []
-    conversation.append({"role": "user", "parts": [system_prompt]})
-    
-    # Add the conversation history
-    for message in messages:
-        conversation.append({
-            "role": message.role,
-            "parts": [message.content]
-        })
-    
+def fetch_file_content(s3_key: str) -> str:
+    """Fetch raw file content from the ingestion service for a given key."""
     try:
-        response = chat_model.generate_content(conversation)
-        return response.text
+        resp = requests.get(
+            f"{INGESTION_SERVICE_URL}/file-content/", params={"s3_key": s3_key}, timeout=20
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("content", "")
     except Exception as e:
-        print(f"Failed to generate response: {e}")
-        return "I apologize, but I'm having trouble generating a response right now. Please try again."
+        print(f"Failed to fetch file content for {s3_key}: {e}")
+        return ""
+
+class AgentState(TypedDict):
+    messages: List[AnyMessage]
+    workspace_id: int
+
+
+def build_tools_for_workspace(workspace_id: int):
+    @tool("retrieve_knowledge", return_direct=False)
+    def retrieve_knowledge(query: str, top_k: int = 3) -> str:
+        """Retrieve concise, relevant information for the given user query.
+        Focus on accuracy and brevity. Do not include any source identifiers."""
+        hits = search_relevant_documents(query, workspace_id, top_k=top_k)
+        if not hits:
+            return ""
+        snippets: List[str] = []
+        for hit in hits:
+            s3_key = hit.get("s3_key", "")
+            if not s3_key:
+                continue
+            content = fetch_file_content(s3_key)
+            if not content:
+                continue
+            # Trim each document to avoid oversized context
+            trimmed = content.strip()
+            if len(trimmed) > 1600:
+                trimmed = trimmed[:1600]
+            snippets.append(trimmed)
+            if len(snippets) >= top_k:
+                break
+        return "\n\n---\n\n".join(snippets)
+
+    @tool("escalate_to_human", return_direct=True)
+    def escalate_to_human(reason: str = "") -> str:
+        """Escalate the conversation to a human agent when appropriate."""
+        return (
+            "It looks like this needs human attention. I've escalated your request to our support team. "
+            "You will hear back shortly."
+        )
+
+    return [retrieve_knowledge, escalate_to_human]
+
+
+def build_agent_graph(workspace_id: int):
+    tools = build_tools_for_workspace(workspace_id)
+    model_with_tools = llm.bind_tools(tools)
+
+    def call_model(state: AgentState):
+        system = SystemMessage(
+            content=(
+                "You are a senior customer service assistant."
+                " Provide accurate, concise, and actionable answers."
+                " Never disclose internal tooling, systems, or where information comes from."
+                " Ask at most one clarifying question if absolutely necessary."
+                " Prefer answering directly when enough context is available."
+            )
+        )
+        response = model_with_tools.invoke([system, *state["messages"]])
+        return {"messages": [response]}
+
+    tool_node = ToolNode(build_tools_for_workspace(workspace_id))
+
+    def should_continue(state: AgentState):
+        last = state["messages"][-1]
+        if hasattr(last, "tool_calls") and last.tool_calls:
+            return "tools"
+        return END
+
+    graph = StateGraph(AgentState)
+    graph.add_node("agent", call_model)
+    graph.add_node("tools", tool_node)
+    graph.set_entry_point("agent")
+    graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+    graph.add_edge("tools", "agent")
+    return graph.compile()
+
+
+def generate_response(messages: List[Message], workspace_id: int) -> str:
+    """Run the LangGraph agent on the given conversation and return the final text."""
+    try:
+        graph = build_agent_graph(workspace_id)
+        # Convert incoming history to LangChain messages
+        lc_history: List[AnyMessage] = []
+        for m in messages:
+            if m.role == "user":
+                lc_history.append(HumanMessage(content=m.content))
+            elif m.role == "assistant":
+                lc_history.append(AIMessage(content=m.content))
+            else:
+                lc_history.append(SystemMessage(content=m.content))
+        state: AgentState = {"messages": lc_history, "workspace_id": workspace_id}
+        result = graph.invoke(state)
+        # Find the last assistant message text
+        for msg in reversed(result["messages"]):
+            if getattr(msg, "type", "") == "ai":
+                return msg.content if isinstance(msg.content, str) else str(msg.content)
+        # Fallback: return last message content
+        last = result["messages"][-1]
+        return last.content if isinstance(last.content, str) else str(last.content)
+    except Exception as e:
+        print(f"Agent failed: {e}")
+        return (
+            "Sorry, I'm having trouble responding right now. Please try again in a moment."
+        )
 
 # --- API Endpoints ---
 
@@ -192,23 +267,16 @@ async def handle_conversation(request: ConversationRequest):
         if latest_message.role != "user":
             raise HTTPException(status_code=400, detail="Last message must be from user")
         
-        # Search for relevant documents
-        relevant_docs = search_relevant_documents(
-            latest_message.content, 
-            request.workspace_id, 
-            top_k=3
-        )
-        
-        # Generate response
+        # Generate response via agent graph (retrieval occurs internally when needed)
         response = generate_response(
-            request.messages, 
-            relevant_docs, 
-            request.workspace_id
+            request.messages,
+            request.workspace_id,
         )
         
         return ConversationResponse(
             response=response,
-            relevant_docs=relevant_docs,
+            # Intentionally not exposing retrieval provenance
+            relevant_docs=[],
             workspace_id=request.workspace_id
         )
         

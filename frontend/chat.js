@@ -175,7 +175,8 @@ class ChatInterface {
         messageDiv.appendChild(timeDiv);
 
         this.chatMessages.appendChild(messageDiv);
-        this.scrollToBottom();
+        // Use microtask to ensure layout is updated before scrolling
+        Promise.resolve().then(() => this.scrollToBottom());
     }
 
     showSystemMessage(content) {
@@ -242,7 +243,12 @@ class ChatInterface {
     }
 
     scrollToBottom() {
-        this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+        const last = this.chatMessages.lastElementChild;
+        if (last && last.scrollIntoView) {
+            last.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        } else {
+            this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+        }
     }
 }
 

@@ -140,8 +140,10 @@ async def embed_file(file_info: FileInfo):
         )
     except Exception as e:
         # Log but don't fail the embedding request
-        print(f"""Warning: failed to update file status for
-        {file_info.file_id}: {e}""")
+        print(
+            f"""Warning: failed to update file status for
+        {file_info.file_id}: {e}"""
+        )
 
     return {"message": f"Successfully embedded file {file_info.s3_key}"}
 

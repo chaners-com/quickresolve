@@ -1,6 +1,13 @@
 import os
 
-from sqlalchemy import Column, ForeignKey, Integer, String, SmallInteger, create_engine
+from sqlalchemy import (
+    Column,
+    ForeignKey,
+    Integer,
+    SmallInteger,
+    String,
+    create_engine,
+)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 

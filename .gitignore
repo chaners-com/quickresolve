@@ -57,6 +57,20 @@ logs/
 *.tmp
 *.temp
 
+# Node / JavaScript
+node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Next.js
+.next/
+.turbo/
+.vercel/
+out/
+
 # Data directories - INCLUDED for remote access
 # These directories contain important data that should be available from any remote location
 # Uncomment the lines below if you want to exclude them from Git tracking

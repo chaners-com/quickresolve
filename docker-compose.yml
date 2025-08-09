@@ -59,22 +59,12 @@ services:
       - "8080:80"
     restart: unless-stopped
 
-  # Removed old static landingpage; replaced by landing-next
-
-  waitlist-service:
-    build: ./waitlist-service
-    ports:
-      - "8050:8050"
-    restart: unless-stopped
-
   landing-next:
     build: ./landing-next
     ports:
       - "8090:3000"
     environment:
       - NODE_ENV=production
-    depends_on:
-      - waitlist-service
     restart: unless-stopped
 
   ingestion-service:

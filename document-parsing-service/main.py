@@ -8,17 +8,15 @@ and notifies the embedding service.
 import os
 import time
 from datetime import datetime
-from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
 import boto3
-import fitz  # PyMuPDF
 import requests
-from docx import Document as DocxDocument
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from src.parsers.registry import PARSER_REGISTRY
 
 app = FastAPI(
     title="Document Parsing Service",
@@ -118,79 +116,9 @@ def _set_file_status_failed(file_id: int) -> None:
         pass
 
 
-def _extract_text_pdf(content: bytes) -> tuple[str, dict]:
-    start = time.time()
-    doc = fitz.open(stream=content, filetype="pdf")
-    parts: list[str] = []
-    for i, page in enumerate(doc, start=1):
-        text = page.get_text()
-        parts.append(f"\n\n## Page {i}\n\n{text.strip()}\n")
-    metadata = {
-        "page_count": doc.page_count,
-        "title": doc.metadata.get("title") if doc.metadata else None,
-        "author": doc.metadata.get("author") if doc.metadata else None,
-        "processing_ms": int((time.time() - start) * 1000),
-    }
-    doc.close()
-    return ("".join(parts).strip(), metadata)
-
-
-def _extract_text_docx(content: bytes) -> tuple[str, dict]:
-    start = time.time()
-    doc = DocxDocument(BytesIO(content))
-    lines: list[str] = []
-
-    # Iterate preserving basic structure (headings, paragraphs, tables)
-    for element in doc.element.body:
-        if element.tag.endswith("p"):
-            para = next(p for p in doc.paragraphs if p._element is element)
-            style = para.style.name if para.style else ""
-            if style.startswith("Heading"):
-                level = 1
-                for n in range(1, 7):
-                    if f"Heading {n}" in style:
-                        level = n
-                        break
-                lines.append(f"{'#' * level} {para.text}\n")
-            else:
-                lines.append(f"{para.text}\n")
-        elif element.tag.endswith("tbl"):
-            table = next(t for t in doc.tables if t._element is element)
-            # Convert first row as header; simple markdown table
-            rows_md: list[str] = []
-            for r_i, row in enumerate(table.rows):
-                cells = [c.text.strip().replace("\n", " ") for c in row.cells]
-                rows_md.append("| " + " | ".join(cells) + " |")
-                if r_i == 0:
-                    rows_md.append(
-                        "| " + " | ".join(["---"] * len(cells)) + " |"
-                    )
-            lines.append("\n" + "\n".join(rows_md) + "\n")
-
-    props = doc.core_properties
-    metadata = {
-        "title": getattr(props, "title", None),
-        "author": getattr(props, "author", None),
-        "created": (
-            getattr(props, "created", None).isoformat()
-            if getattr(props, "created", None)
-            else None
-        ),
-        "modified": (
-            getattr(props, "modified", None).isoformat()
-            if getattr(props, "modified", None)
-            else None
-        ),
-        "processing_ms": int((time.time() - start) * 1000),
-    }
-    return ("\n".join(lines).strip(), metadata)
-
-
 @app.post("/parse/", response_model=ParseResponse)
 async def parse_document(request: ParseRequest):
     started = time.time()
-
-    print(f"Parsing document: {request.s3_key}")
 
     # 1) Download original content from S3
     try:
@@ -203,20 +131,13 @@ async def parse_document(request: ParseRequest):
             status_code=500, detail=f"Failed to download from S3: {e}"
         )
 
-    # 2) Parse to Markdown based on original filename extension
+    # 2) Parse to Markdown using registry based on original filename extension
     ext = request.original_filename.lower().strip().split(".")[-1]
-    parsed_md = ""
-    extracted_metadata: dict = {}
     try:
-        if ext == "pdf":
-            parsed_md, extracted_metadata = _extract_text_pdf(content_bytes)
-        elif ext in ("docx", "doc"):
-            parsed_md, extracted_metadata = _extract_text_docx(content_bytes)
-        elif ext == "md":
-            parsed_md = content_bytes.decode("utf-8", errors="ignore")
-            extracted_metadata = {}
-        else:
+        parser_fn = PARSER_REGISTRY.get(ext)
+        if not parser_fn:
             raise ValueError(f"Unsupported file type: .{ext}")
+        parsed_md, extracted_metadata = parser_fn(content_bytes)
     except Exception as e:
         _set_file_status_failed(request.file_id)
         raise HTTPException(
@@ -241,17 +162,16 @@ async def parse_document(request: ParseRequest):
             status_code=500, detail=f"Failed to upload parsed file to S3: {e}"
         )
 
-    """
     # 4) Save a local copy for testing: ./parsed/{workspace_id}_{file_id}.md
     try:
-        local_path = Path("parsed") /
-        f"{request.workspace_id}_{request.file_id}.md"
+        local_path = (
+            Path("parsed") / f"{request.workspace_id}_{request.file_id}.md"
+        )
         local_path.write_bytes(parsed_bytes)
     except Exception:
         # Local save is best-effort;
         # do not fail the request if it writes to S3 successfully
         pass
-    """
 
     # 5) Notify embedding-service to embed the parsed content
     try:

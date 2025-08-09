@@ -1,6 +1,8 @@
 node_modules
 .next
-.out
+out
+.turbo
+.vercel
 npm-debug.log
 .DS_Store
 .git

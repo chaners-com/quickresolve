@@ -86,16 +86,36 @@ def startup_event():
         )
 
 
+# --- Helpers ---
+
+
+def _mark_file_failed(file_id: int) -> None:
+    """Best-effort mark a file as failed (status=3) in ingestion-service."""
+    try:
+        requests.put(
+            f"{INGESTION_SERVICE_URL}/files/{file_id}/status",
+            params={"status": 3},
+            timeout=10,
+        )
+    except Exception:
+        # Swallow errors; do not block original error propagation
+        pass
+
+
 # --- API Endpoints ---
 
 
 @app.post("/embed/")
 async def embed_file(file_info: FileInfo):
-    """Downloads a file, generates embeddings, and stores them in Qdrant."""
+    """Downloads a file, generates embeddings, and stores them in Qdrant.
+    On any failure, mark file status=3 via ingestion-service.
+    On success, do not change status.
+    """
     try:
         response = s3.get_object(Bucket=S3_BUCKET, Key=file_info.s3_key)
         file_content = response["Body"].read().decode("utf-8")
     except Exception as e:
+        _mark_file_failed(file_info.file_id)
         raise HTTPException(
             status_code=500, detail=f"Failed to download from S3: {e}"
         )
@@ -107,6 +127,7 @@ async def embed_file(file_info: FileInfo):
             task_type="retrieval_document",
         )["embedding"]
     except Exception as e:
+        _mark_file_failed(file_info.file_id)
         raise HTTPException(
             status_code=500, detail=f"Failed to generate embedding: {e}"
         )
@@ -127,6 +148,7 @@ async def embed_file(file_info: FileInfo):
             wait=True,
         )
     except Exception as e:
+        _mark_file_failed(file_info.file_id)
         raise HTTPException(
             status_code=500, detail=f"Failed to upsert to Qdrant: {e}"
         )

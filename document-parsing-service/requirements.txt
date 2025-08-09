@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+pydantic
+requests
+boto3
+PyMuPDF
+python-docx

@@ -162,22 +162,51 @@ async def create_upload_file(
         db.commit()
         db.refresh(db_file)
 
-    # Trigger the embedding service (for both new and existing files)
-    embedding_service_url = "http://embedding-service:8001/embed/"
+    # Route by file type: .md -> embed directly, .pdf/.doc/.docx -> parse first
+    embedding_service_url = os.getenv(
+        "EMBEDDING_SERVICE_URL", "http://embedding-service:8001/embed/"
+    )
+    parsing_service_url = os.getenv(
+        "PARSING_SERVICE_URL", "http://document-parsing-service:8005/parse/"
+    )
+    filename_lower = file.filename.lower()
+
     try:
-        requests.post(
-            embedding_service_url,
-            json={
-                "s3_key": s3_key,
-                "file_id": db_file.id,
-                "workspace_id": workspace_id,
-            },
-            timeout=30,  # Add timeout to prevent hanging requests
-        )
-    except requests.exceptions.RequestException:
-        # In a real app, you might want a retry mechanism or a more robust way
-        # to handle the embedding service being temporarily unavailable.
-        print("Failed to trigger embedding service")
+        if filename_lower.endswith(".md"):
+            # Directly trigger embedding for markdown
+            requests.post(
+                embedding_service_url,
+                json={
+                    "s3_key": s3_key,
+                    "file_id": db_file.id,
+                    "workspace_id": workspace_id,
+                },
+                timeout=30,
+            )
+        elif (
+            filename_lower.endswith(".pdf")
+            or filename_lower.endswith(".doc")
+            or filename_lower.endswith(".docx")
+        ):
+            # Trigger parsing service;
+            # it will upload parsed MD and notify embedding service.
+            requests.post(
+                parsing_service_url,
+                json={
+                    "s3_key": s3_key,
+                    "file_id": db_file.id,
+                    "workspace_id": workspace_id,
+                    "original_filename": file.filename,
+                },
+                timeout=60,
+            )
+        else:
+            # Unsupported types: mark as error (3) and persist
+            db_file.status = 3
+            db.commit()
+            db.refresh(db_file)
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to trigger downstream service: {e}")
 
     return {
         "filename": file.filename,
@@ -283,7 +312,7 @@ def get_file_status(file_id: int, db: Session = Depends(get_db)):
 @app.put("/files/{file_id}/status", response_model=FileStatusResponse)
 def update_file_status(
     file_id: int,
-    status: int = Query(..., ge=1, le=2),
+    status: int = Query(..., ge=1, le=3),
     db: Session = Depends(get_db),
 ):
     file = db.query(DBFile).filter(DBFile.id == file_id).first()

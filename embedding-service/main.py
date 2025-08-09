@@ -13,7 +13,6 @@ from qdrant_client.http.exceptions import UnexpectedResponse
 
 # --- Pydantic Models ---
 
-
 class FileInfo(BaseModel):
     s3_key: str
     file_id: int

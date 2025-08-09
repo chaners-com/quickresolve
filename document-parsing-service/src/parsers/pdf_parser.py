@@ -1,6 +1,11 @@
+"""
+Parses PDF documents to Markdown.
+
+This parser uses the `pymupdf` library to parse the document.
+"""
+
 import time
 from typing import Dict, Tuple
-
 import fitz
 
 
@@ -18,4 +23,4 @@ def parse(content: bytes) -> Tuple[str, Dict]:
         "processing_ms": int((time.time() - start) * 1000),
     }
     doc.close()
-    return ("".join(parts).strip(), metadata)
+    return ("".join(parts).strip(), metadata) 

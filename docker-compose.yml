@@ -134,6 +134,15 @@ services:
       - minio
     restart: unless-stopped
 
+  chunking-service:
+    build: ./chunking-service
+    ports:
+      - "8006:8006"
+    environment:
+      EMBEDDING_SERVICE_URL: "http://embedding-service:8001"
+      INGESTION_SERVICE_URL: "http://ingestion-service:8000"
+    restart: unless-stopped
+
   data-generator:
     build: ./data-generator
     environment:

@@ -188,7 +188,7 @@ async def create_upload_file(
 
 
 @app.get("/file-content/")
-def get_file_content(s3_key: str):
+async def get_file_content(s3_key: str):
     """
     Retrieves the content of a file from S3 given its key.
     """
@@ -206,7 +206,7 @@ def get_file_content(s3_key: str):
 
 
 @app.post("/users/", response_model=UserResponse, status_code=201)
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
+async def create_user(user: UserCreate, db: Session = Depends(get_db)):
     existing_user = (
         db.query(User).filter(User.username == user.username).first()
     )
@@ -226,7 +226,7 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
 
 
 @app.get("/users/", response_model=list[UserResponse])
-def get_user_by_name(username: str, db: Session = Depends(get_db)):
+async def get_user_by_name(username: str, db: Session = Depends(get_db)):
     """
     Looks up a user by their exact username.
     Returns a list containing the user if found, otherwise an empty list.
@@ -236,7 +236,7 @@ def get_user_by_name(username: str, db: Session = Depends(get_db)):
 
 
 @app.post("/workspaces/", response_model=WorkspaceResponse, status_code=201)
-def create_workspace(
+async def create_workspace(
     workspace: WorkspaceCreate, db: Session = Depends(get_db)
 ):
     owner = db.query(User).filter(User.id == workspace.owner_id).first()
@@ -254,7 +254,7 @@ def create_workspace(
 
 
 @app.get("/workspaces/", response_model=list[WorkspaceResponse])
-def get_workspace_by_name(
+async def get_workspace_by_name(
     name: str, owner_id: int, db: Session = Depends(get_db)
 ):
     """
@@ -270,7 +270,7 @@ def get_workspace_by_name(
 
 
 @app.get("/workspaces/all", response_model=list[WorkspaceResponse])
-def get_all_workspaces(db: Session = Depends(get_db)):
+async def get_all_workspaces(db: Session = Depends(get_db)):
     """
     Get all available workspaces.
     Returns a list of all workspaces in the system.
@@ -283,7 +283,7 @@ def get_all_workspaces(db: Session = Depends(get_db)):
 
 
 @app.get("/files/{file_id}/status", response_model=FileStatusResponse)
-def get_file_status(file_id: int, db: Session = Depends(get_db)):
+async def get_file_status(file_id: int, db: Session = Depends(get_db)):
     file = db.query(DBFile).filter(DBFile.id == file_id).first()
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
@@ -291,9 +291,9 @@ def get_file_status(file_id: int, db: Session = Depends(get_db)):
 
 
 @app.put("/files/{file_id}/status", response_model=FileStatusResponse)
-def update_file_status(
+async def update_file_status(
     file_id: int,
-    status: int = Query(..., ge=1, le=2),
+    status: int = Query(..., ge=1, le=3),
     db: Session = Depends(get_db),
 ):
     file = db.query(DBFile).filter(DBFile.id == file_id).first()

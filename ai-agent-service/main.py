@@ -118,7 +118,8 @@ def startup_event():
                 print("Qdrant collection accessible.")
             except Exception:
                 print(
-                    f"Qdrant reachable but collection '{QDRANT_COLLECTION_NAME}' not found (delegated to embedding-service)."
+                    f"Qdrant reachable but collection '{QDRANT_COLLECTION_NAME}' "
+                    f"not found (delegated to embedding-service)."
                 )
         else:
             print(
@@ -137,7 +138,8 @@ def search_relevant_documents(
     """Search for relevant documents for a workspace via the embedding service."""
     try:
         print(
-            f"Searching for query: '{query}' in workspace {workspace_id} with top_k={top_k}"
+            f"Searching for query: '{query}' in workspace {workspace_id} "
+            f"with top_k={top_k}"
         )
         print(f"Using embedding service URL: {EMBEDDING_SERVICE_URL}")
 
@@ -223,8 +225,7 @@ def build_tools_for_workspace(workspace_id: int):
     def retrieve_knowledge(query: str, top_k: int = 3) -> str:
         """Search and retrieve relevant information from the knowledge base to answer user questions.
         This tool should be used whenever the user asks a question that requires specific information.
-        Always use this tool first to gather relevant context before providing an answer.
-        """
+        Always use this tool first to gather relevant context before providing an answer."""
         hits = search_relevant_documents(query, workspace_id, top_k=top_k)
         if not hits:
             return "No relevant information found in the knowledge base."
@@ -249,8 +250,8 @@ def build_tools_for_workspace(workspace_id: int):
     def escalate_to_human(reason: str = "") -> str:
         """Escalate the conversation to a human agent when appropriate."""
         return (
-            "It looks like this needs human attention. I've escalated your request to our support team. "
-            "You will hear back shortly."
+            "It looks like this needs human attention. I've escalated your request "
+            "to our support team. You will hear back shortly."
         )
 
     return [retrieve_knowledge, escalate_to_human]

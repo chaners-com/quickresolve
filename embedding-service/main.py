@@ -14,6 +14,7 @@ from qdrant_client.http.exceptions import UnexpectedResponse
 
 # --- Pydantic Models ---
 
+
 class FileInfo(BaseModel):
     s3_key: str
     file_id: int
@@ -86,29 +87,11 @@ def startup_event():
         )
 
 
-# --- Helpers ---
-
-
-def _mark_file_failed(file_id: int) -> None:
-    """Best-effort mark a file as failed (status=3) in ingestion-service."""
-    try:
-        requests.put(
-            f"{INGESTION_SERVICE_URL}/files/{file_id}/status",
-            params={"status": 3},
-            timeout=10,
-        )
-    except Exception:
-        # Swallow errors; do not block original error propagation
-        pass
-
-
-# --- API Endpoints ---
-
-
-async def update_file_status_async(file_id: int, status: int):
+async def _update_file_status_async(file_id: int, status: int):
     """Asynchronously update file status in ingestion service."""
     try:
-        # Use asyncio.to_thread to run the blocking requests call in a thread pool
+        # Use asyncio.to_thread to run the blocking requests
+        # call in a thread pool
         await asyncio.to_thread(
             requests.put,
             f"{INGESTION_SERVICE_URL}/files/{file_id}/status",
@@ -133,7 +116,7 @@ async def embed_file(file_info: FileInfo):
         response = s3.get_object(Bucket=S3_BUCKET, Key=file_info.s3_key)
         file_content = response["Body"].read().decode("utf-8")
     except Exception as e:
-        _mark_file_failed(file_info.file_id)
+        _update_file_status_async(file_info.file_id, 3)
         raise HTTPException(
             status_code=500, detail=f"Failed to download from S3: {e}"
         )
@@ -145,7 +128,7 @@ async def embed_file(file_info: FileInfo):
             task_type="retrieval_document",
         )["embedding"]
     except Exception as e:
-        _mark_file_failed(file_info.file_id)
+        _update_file_status_async(file_info.file_id, 3)
         raise HTTPException(
             status_code=500, detail=f"Failed to generate embedding: {e}"
         )
@@ -166,14 +149,15 @@ async def embed_file(file_info: FileInfo):
             wait=True,
         )
     except Exception as e:
-        _mark_file_failed(file_info.file_id)
+        _update_file_status_async(file_info.file_id, 3)
         raise HTTPException(
             status_code=500, detail=f"Failed to upsert to Qdrant: {e}"
         )
 
     # Mark file as Done (2) in ingestion-service asynchronously
-    # This prevents blocking the main embedding process and avoids race conditions
-    asyncio.create_task(update_file_status_async(file_info.file_id, 2))
+    # This prevents blocking the main embedding process
+    # and avoids race conditions
+    asyncio.create_task(_update_file_status_async(file_info.file_id, 2))
 
     return {"message": f"Successfully embedded file {file_info.s3_key}"}
 

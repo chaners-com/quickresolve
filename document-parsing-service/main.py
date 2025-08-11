@@ -5,6 +5,7 @@ FastAPI service that parses PDF/DOC/DOCX to Markdown, uploads to S3,
 and notifies the embedding service.
 """
 
+import asyncio
 import os
 import time
 from datetime import datetime
@@ -78,6 +79,25 @@ class ParseResponse(BaseModel):
     extracted_metadata: Optional[dict] = None
 
 
+async def _update_file_status_async(file_id: int, status: int):
+    """Asynchronously update file status in ingestion service."""
+    try:
+        # Use asyncio.to_thread to run the blocking requests
+        # call in a thread pool
+        await asyncio.to_thread(
+            requests.put,
+            f"{ingestion_service_url}/files/{file_id}/status",
+            params={"status": status},
+            timeout=30,  # Increased timeout for async operations
+        )
+    except Exception as e:
+        # Log but don't fail the embedding request
+        print(
+            f"""Warning: failed to update file status for
+        {file_id}: {e}"""
+        )
+
+
 @app.get("/health")
 async def health_check():
     return {
@@ -105,17 +125,6 @@ async def get_supported_types():
     }
 
 
-def _set_file_status_failed(file_id: int) -> None:
-    try:
-        requests.put(
-            f"{ingestion_service_url}/files/{file_id}/status",
-            params={"status": 3},
-            timeout=10,
-        )
-    except Exception:
-        pass
-
-
 @app.post("/parse/", response_model=ParseResponse)
 async def parse_document(request: ParseRequest):
     started = time.time()
@@ -126,7 +135,7 @@ async def parse_document(request: ParseRequest):
         content_bytes: bytes = obj["Body"].read()
         original_size = len(content_bytes)
     except Exception as e:
-        _set_file_status_failed(request.file_id)
+        _update_file_status_async(request.file_id, 3)
         raise HTTPException(
             status_code=500, detail=f"Failed to download from S3: {e}"
         )
@@ -136,10 +145,11 @@ async def parse_document(request: ParseRequest):
     try:
         parser_fn = PARSER_REGISTRY.get(ext)
         if not parser_fn:
+            _update_file_status_async(request.file_id, 3)
             raise ValueError(f"Unsupported file type: .{ext}")
         parsed_md, extracted_metadata = parser_fn(content_bytes)
     except Exception as e:
-        _set_file_status_failed(request.file_id)
+        _update_file_status_async(request.file_id, 3)
         raise HTTPException(
             status_code=500, detail=f"Failed to parse document: {e}"
         )
@@ -157,7 +167,7 @@ async def parse_document(request: ParseRequest):
             ContentType="text/markdown",
         )
     except Exception as e:
-        _set_file_status_failed(request.file_id)
+        _update_file_status_async(request.file_id, 3)
         raise HTTPException(
             status_code=500, detail=f"Failed to upload parsed file to S3: {e}"
         )
@@ -176,7 +186,7 @@ async def parse_document(request: ParseRequest):
             timeout=30,
         )
     except Exception as e:
-        _set_file_status_failed(request.file_id)
+        _update_file_status_async(request.file_id, 3)
         raise HTTPException(
             status_code=500, detail=f"Failed to notify chunking-service: {e}"
         )

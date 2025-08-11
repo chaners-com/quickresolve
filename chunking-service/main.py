@@ -3,8 +3,8 @@
 Chunking Service
 """
 
+import asyncio
 import os
-from datetime import datetime
 from typing import Optional
 
 import requests
@@ -13,7 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # App setup
-app = FastAPI(title="Chunking Service", description="Pass-through chunking service")
+app = FastAPI(
+    title="Chunking Service", description="Pass-through chunking service"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,8 +26,12 @@ app.add_middleware(
 )
 
 # Environment
-embedding_service_url = os.getenv("EMBEDDING_SERVICE_URL", "http://embedding-service:8001")
-ingestion_service_url = os.getenv("INGESTION_SERVICE_URL", "http://ingestion-service:8000")
+embedding_service_url = os.getenv(
+    "EMBEDDING_SERVICE_URL", "http://embedding-service:8001"
+)
+ingestion_service_url = os.getenv(
+    "INGESTION_SERVICE_URL", "http://ingestion-service:8000"
+)
 
 
 class ChunkRequest(BaseModel):
@@ -33,6 +39,25 @@ class ChunkRequest(BaseModel):
     file_id: int
     workspace_id: int
     original_filename: Optional[str] = None
+
+
+async def _update_file_status_async(file_id: int, status: int):
+    """Asynchronously update file status in ingestion service."""
+    try:
+        # Use asyncio.to_thread to run the blocking requests
+        # call in a thread pool
+        await asyncio.to_thread(
+            requests.put,
+            f"{ingestion_service_url}/files/{file_id}/status",
+            params={"status": status},
+            timeout=30,  # Increased timeout for async operations
+        )
+    except Exception as e:
+        # Log but don't fail the embedding request
+        print(
+            f"""Warning: failed to update file status for
+        {file_id}: {e}"""
+        )
 
 
 @app.get("/health")
@@ -57,18 +82,13 @@ async def chunk(req: ChunkRequest):
         return {"success": True, "forwarded": True}
     except Exception as e:
         # Mark file as failed (status=3) in ingestion-service
-        try:
-            requests.put(
-                f"{ingestion_service_url}/files/{req.file_id}/status",
-                params={"status": 3},
-                timeout=10,
-            )
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=f"Failed to forward to embedding: {e}")
+        _update_file_status_async(req.file_id, 3)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to forward to embedding: {e}"
+        )
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8006) 
+    uvicorn.run(app, host="0.0.0.0", port=8006)

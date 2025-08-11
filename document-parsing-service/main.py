@@ -38,11 +38,11 @@ S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
 S3_BUCKET = os.getenv("S3_BUCKET")
 
-EMBEDDING_SERVICE_URL = os.getenv(
-    "EMBEDDING_SERVICE_URL", "http://embedding-service:8001"
-)
-INGESTION_SERVICE_URL = os.getenv(
+ingestion_service_url = os.getenv(
     "INGESTION_SERVICE_URL", "http://ingestion-service:8000"
+)
+chunking_service_url = os.getenv(
+    "CHUNKING_SERVICE_URL", "http://chunking-service:8006"
 )
 
 s3_client = None
@@ -108,7 +108,7 @@ async def get_supported_types():
 def _set_file_status_failed(file_id: int) -> None:
     try:
         requests.put(
-            f"{INGESTION_SERVICE_URL}/files/{file_id}/status",
+            f"{ingestion_service_url}/files/{file_id}/status",
             params={"status": 3},
             timeout=10,
         )
@@ -162,33 +162,23 @@ async def parse_document(request: ParseRequest):
             status_code=500, detail=f"Failed to upload parsed file to S3: {e}"
         )
 
-    # 4) Save a local copy for testing: ./parsed/{workspace_id}_{file_id}.md
+    # 5) Forward to chunking-service
     try:
-        local_path = (
-            Path("parsed") / f"{request.workspace_id}_{request.file_id}.md"
-        )
-        local_path.write_bytes(parsed_bytes)
-    except Exception:
-        # Local save is best-effort;
-        # do not fail the request if it writes to S3 successfully
-        pass
 
-    # 5) Notify embedding-service to embed the parsed content
-    try:
         requests.post(
-            f"{EMBEDDING_SERVICE_URL}/embed/",
+            f"{chunking_service_url}/chunk",
             json={
                 "s3_key": parsed_s3_key,
                 "file_id": request.file_id,
                 "workspace_id": request.workspace_id,
+                "original_filename": request.original_filename,
             },
             timeout=30,
         )
     except Exception as e:
-        # Mark as failed since embedding cannot proceed
         _set_file_status_failed(request.file_id)
         raise HTTPException(
-            status_code=500, detail=f"Failed to notify embedding-service: {e}"
+            status_code=500, detail=f"Failed to notify chunking-service: {e}"
         )
 
     duration = time.time() - started

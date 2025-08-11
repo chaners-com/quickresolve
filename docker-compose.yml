@@ -59,6 +59,14 @@ services:
       - "8080:80"
     restart: unless-stopped
 
+  landing-next:
+    build: ./landing-next
+    ports:
+      - "8090:3000"
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+
   ingestion-service:
     build: ./ingestion-service
     ports:

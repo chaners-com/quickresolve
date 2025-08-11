@@ -162,24 +162,25 @@ async def create_upload_file(
         db.commit()
         db.refresh(db_file)
 
-    # Route by file type: .md -> embed directly, .pdf/.doc/.docx -> parse first
-    embedding_service_url = os.getenv(
-        "EMBEDDING_SERVICE_URL", "http://embedding-service:8001/embed/"
+    # Route by file type: .md -> chunking-service, .pdf/.doc/.docx -> parsing-service
+    chunking_service_url = os.getenv(
+        "CHUNKING_SERVICE_URL", "http://chunking-service:8006"
     )
     parsing_service_url = os.getenv(
-        "PARSING_SERVICE_URL", "http://document-parsing-service:8005/parse/"
+        "PARSING_SERVICE_URL", "http://document-parsing-service:8005"
     )
     filename_lower = file.filename.lower()
 
     try:
         if filename_lower.endswith(".md"):
-            # Directly trigger embedding for markdown
+            # Forward MD files to chunking-service (pass-through)
             requests.post(
-                embedding_service_url,
+                f"{chunking_service_url}/chunk",
                 json={
                     "s3_key": s3_key,
                     "file_id": db_file.id,
                     "workspace_id": workspace_id,
+                    "original_filename": file.filename,
                 },
                 timeout=30,
             )
@@ -188,10 +189,9 @@ async def create_upload_file(
             or filename_lower.endswith(".doc")
             or filename_lower.endswith(".docx")
         ):
-            # Trigger parsing service;
-            # it will upload parsed MD and notify embedding service.
+            # Trigger parsing service; it will upload parsed MD and then call chunking-service
             requests.post(
-                parsing_service_url,
+                f"{parsing_service_url}/parse/",
                 json={
                     "s3_key": s3_key,
                     "file_id": db_file.id,

@@ -1,6 +1,6 @@
+import asyncio
 import os
 import time
-import asyncio
 from typing import Optional
 
 import boto3
@@ -106,6 +106,7 @@ async def update_file_status_async(file_id: int, status: int):
             f"""Warning: failed to update file status for
         {file_id}: {e}"""
         )
+
 
 @app.post("/embed/")
 async def embed_file(file_info: FileInfo):

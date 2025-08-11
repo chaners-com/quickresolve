@@ -269,6 +269,16 @@ def get_workspace_by_name(
     return [workspace] if workspace else []
 
 
+@app.get("/workspaces/all", response_model=list[WorkspaceResponse])
+def get_all_workspaces(db: Session = Depends(get_db)):
+    """
+    Get all available workspaces.
+    Returns a list of all workspaces in the system.
+    """
+    workspaces = db.query(Workspace).all()
+    return workspaces
+
+
 # --- File Status Endpoints ---
 
 

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 from typing import Optional
@@ -104,6 +105,24 @@ def _mark_file_failed(file_id: int) -> None:
 # --- API Endpoints ---
 
 
+async def update_file_status_async(file_id: int, status: int):
+    """Asynchronously update file status in ingestion service."""
+    try:
+        # Use asyncio.to_thread to run the blocking requests call in a thread pool
+        await asyncio.to_thread(
+            requests.put,
+            f"{INGESTION_SERVICE_URL}/files/{file_id}/status",
+            params={"status": status},
+            timeout=30,  # Increased timeout for async operations
+        )
+    except Exception as e:
+        # Log but don't fail the embedding request
+        print(
+            f"""Warning: failed to update file status for
+        {file_id}: {e}"""
+        )
+
+
 @app.post("/embed/")
 async def embed_file(file_info: FileInfo):
     """Downloads a file, generates embeddings, and stores them in Qdrant.
@@ -152,19 +171,9 @@ async def embed_file(file_info: FileInfo):
             status_code=500, detail=f"Failed to upsert to Qdrant: {e}"
         )
 
-    # Mark file as Done (2) in ingestion-service
-    try:
-        requests.put(
-            f"{INGESTION_SERVICE_URL}/files/{file_info.file_id}/status",
-            params={"status": 2},
-            timeout=10,
-        )
-    except Exception as e:
-        # Log but don't fail the embedding request
-        print(
-            f"""Warning: failed to update file status for
-        {file_info.file_id}: {e}"""
-        )
+    # Mark file as Done (2) in ingestion-service asynchronously
+    # This prevents blocking the main embedding process and avoids race conditions
+    asyncio.create_task(update_file_status_async(file_info.file_id, 2))
 
     return {"message": f"Successfully embedded file {file_info.s3_key}"}
 

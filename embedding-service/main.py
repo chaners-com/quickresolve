@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import time
-from typing import Optional
+from typing import Optional, Union
 
 import boto3
 import google.generativeai as genai
@@ -23,7 +23,7 @@ class FileInfo(BaseModel):
 
 
 class SearchResult(BaseModel):
-    id: int
+    id: Union[str, int]
     payload: Optional[dict] = None
     score: float
 
@@ -174,9 +174,9 @@ async def embed_file(file_info: FileInfo):
 @app.post("/embed-chunk")
 async def embed_chunk(req: EmbedChunkRequest):
     """Retrieve canonical chunk payload
-     from S3 and upsert embedding by chunk_id."""
+    from S3 and upsert embedding by chunk_id."""
     try:
-        key = f"payload/{req.workspace_id}/{req.chunk_id}.json"
+        key = f"{req.workspace_id}/payload/{req.chunk_id}.json"
         obj = s3.get_object(Bucket=S3_BUCKET, Key=key)
         payload_bytes = obj["Body"].read()
         payload = json.loads(payload_bytes.decode("utf-8"))

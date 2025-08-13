@@ -154,8 +154,8 @@ async def parse_document(request: ParseRequest):
 
     parsed_bytes = parsed_md.encode("utf-8")
 
-    # 3) Upload parsed markdown to S3 under parsed/{workspace_id}/{file_id}.md
-    parsed_s3_key = f"parsed/{request.workspace_id}/{request.file_id}.md"
+    # 3) Upload parsed markdown to S3 under {workspace_id}/parsed/{file_id}.md
+    parsed_s3_key = f"{request.workspace_id}/parsed/{request.file_id}.md"
 
     try:
         s3_client.put_object(

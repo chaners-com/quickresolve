@@ -2,7 +2,7 @@ import os
 import time
 
 import boto3
-import requests
+import httpx
 from database import Base
 from database import File as DBFile
 from database import SessionLocal, User, Workspace, engine
@@ -54,6 +54,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "service": "ingestion-service"}
 
 
 def get_db():
@@ -162,7 +167,8 @@ async def create_upload_file(
         db.commit()
         db.refresh(db_file)
 
-    # Route by file type: .md -> chunking-service, .pdf/.doc/.docx -> parsing-service
+    # Route by file type: .md -> chunking-service,
+    # .pdf/.doc/.docx -> parsing-service
     chunking_service_url = os.getenv(
         "CHUNKING_SERVICE_URL", "http://chunking-service:8006"
     )
@@ -174,38 +180,39 @@ async def create_upload_file(
     try:
         if filename_lower.endswith(".md"):
             # Forward MD files to chunking-service (pass-through)
-            requests.post(
-                f"{chunking_service_url}/chunk",
-                json={
-                    "s3_key": s3_key,
-                    "file_id": db_file.id,
-                    "workspace_id": workspace_id,
-                    "original_filename": file.filename,
-                },
-                timeout=30,
-            )
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                await client.post(
+                    f"{chunking_service_url}/chunk",
+                    json={
+                        "s3_key": s3_key,
+                        "file_id": db_file.id,
+                        "workspace_id": workspace_id,
+                        "original_filename": file.filename,
+                    },
+                )
         elif (
             filename_lower.endswith(".pdf")
             or filename_lower.endswith(".doc")
             or filename_lower.endswith(".docx")
         ):
-            # Trigger parsing service; it will upload parsed MD and then call chunking-service
-            requests.post(
-                f"{parsing_service_url}/parse/",
-                json={
-                    "s3_key": s3_key,
-                    "file_id": db_file.id,
-                    "workspace_id": workspace_id,
-                    "original_filename": file.filename,
-                },
-                timeout=60,
-            )
+            # Trigger parsing service; it will upload parsed MD
+            # and then call chunking-service
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                await client.post(
+                    f"{parsing_service_url}/parse/",
+                    json={
+                        "s3_key": s3_key,
+                        "file_id": db_file.id,
+                        "workspace_id": workspace_id,
+                        "original_filename": file.filename,
+                    },
+                )
         else:
             # Unsupported types: mark as error (3) and persist
             db_file.status = 3
             db.commit()
             db.refresh(db_file)
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         print(f"Failed to trigger downstream service: {e}")
 
     return {

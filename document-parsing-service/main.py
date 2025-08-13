@@ -8,12 +8,11 @@ and notifies the embedding service.
 import asyncio
 import os
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import boto3
-import requests
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -82,20 +81,13 @@ class ParseResponse(BaseModel):
 async def _update_file_status_async(file_id: int, status: int):
     """Asynchronously update file status in ingestion service."""
     try:
-        # Use asyncio.to_thread to run the blocking requests
-        # call in a thread pool
-        await asyncio.to_thread(
-            requests.put,
-            f"{ingestion_service_url}/files/{file_id}/status",
-            params={"status": status},
-            timeout=30,  # Increased timeout for async operations
-        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.put(
+                f"{ingestion_service_url}/files/{file_id}/status",
+                params={"status": status},
+            )
     except Exception as e:
-        # Log but don't fail the embedding request
-        print(
-            f"""Warning: failed to update file status for
-        {file_id}: {e}"""
-        )
+        print(f"Warning: failed to update file status for {file_id}: {e}")
 
 
 @app.get("/health")
@@ -103,7 +95,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "document-parsing-service",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": int(time.time()),
     }
 
 
@@ -129,13 +121,19 @@ async def get_supported_types():
 async def parse_document(request: ParseRequest):
     started = time.time()
 
+    print(
+        f"""Parsing document {request.s3_key}
+         for file {request.file_id}
+         in workspace {request.workspace_id}"""
+    )
+
     # 1) Download original content from S3
     try:
         obj = s3_client.get_object(Bucket=S3_BUCKET, Key=request.s3_key)
         content_bytes: bytes = obj["Body"].read()
         original_size = len(content_bytes)
     except Exception as e:
-        _update_file_status_async(request.file_id, 3)
+        asyncio.create_task(_update_file_status_async(request.file_id, 3))
         raise HTTPException(
             status_code=500, detail=f"Failed to download from S3: {e}"
         )
@@ -145,11 +143,11 @@ async def parse_document(request: ParseRequest):
     try:
         parser_fn = PARSER_REGISTRY.get(ext)
         if not parser_fn:
-            _update_file_status_async(request.file_id, 3)
+            asyncio.create_task(_update_file_status_async(request.file_id, 3))
             raise ValueError(f"Unsupported file type: .{ext}")
         parsed_md, extracted_metadata = parser_fn(content_bytes)
     except Exception as e:
-        _update_file_status_async(request.file_id, 3)
+        asyncio.create_task(_update_file_status_async(request.file_id, 3))
         raise HTTPException(
             status_code=500, detail=f"Failed to parse document: {e}"
         )
@@ -167,26 +165,25 @@ async def parse_document(request: ParseRequest):
             ContentType="text/markdown",
         )
     except Exception as e:
-        _update_file_status_async(request.file_id, 3)
+        asyncio.create_task(_update_file_status_async(request.file_id, 3))
         raise HTTPException(
             status_code=500, detail=f"Failed to upload parsed file to S3: {e}"
         )
 
     # 5) Forward to chunking-service
     try:
-
-        requests.post(
-            f"{chunking_service_url}/chunk",
-            json={
-                "s3_key": parsed_s3_key,
-                "file_id": request.file_id,
-                "workspace_id": request.workspace_id,
-                "original_filename": request.original_filename,
-            },
-            timeout=30,
-        )
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            await client.post(
+                f"{chunking_service_url}/chunk",
+                json={
+                    "s3_key": parsed_s3_key,
+                    "file_id": request.file_id,
+                    "workspace_id": request.workspace_id,
+                    "original_filename": request.original_filename,
+                },
+            )
     except Exception as e:
-        _update_file_status_async(request.file_id, 3)
+        asyncio.create_task(_update_file_status_async(request.file_id, 3))
         raise HTTPException(
             status_code=500, detail=f"Failed to notify chunking-service: {e}"
         )

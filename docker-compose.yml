@@ -128,7 +128,11 @@ services:
     restart: unless-stopped
 
   document-parsing-service:
-    build: ./document-parsing-service
+    build:
+      context: ./document-parsing-service
+      args:
+        PDF_PARSER_VERSION: "${PDF_PARSER_VERSION}"
+        DOCX_PARSER_VERSION: "${DOCX_PARSER_VERSION}"
     ports:
       - "8005:8005"
     environment:
@@ -137,6 +141,8 @@ services:
       S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD}"
       S3_BUCKET: "${S3_BUCKET}"
       LOG_LEVEL: "INFO"
+      PDF_PARSER_VERSION: "${PDF_PARSER_VERSION}"
+      DOCX_PARSER_VERSION: "${DOCX_PARSER_VERSION}"
     depends_on:
       - db
       - minio
@@ -168,4 +174,4 @@ services:
 
 volumes:
   postgres_data:
-  qdrant_storage:
+  qdrant_storage: 

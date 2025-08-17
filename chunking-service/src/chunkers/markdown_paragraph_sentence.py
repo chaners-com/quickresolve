@@ -1,3 +1,9 @@
+"""
+Chunker
+
+Chunks by markdown sections > paragraphs > sentences > tokens.
+"""
+
 import hashlib
 import os
 import re
@@ -188,7 +194,13 @@ def _pack_paragraphs(paragraphs: List[str]) -> List[str]:
 
 class MarkdownParagraphSentenceChunker(Chunker):
     def chunk(
-        self, *, text: str, file_id: int, workspace_id: int, s3_key: str
+        self,
+        *,
+        text: str,
+        file_id: int,
+        workspace_id: int,
+        s3_key: str,
+        document_parser_version: str | None = None,
     ) -> List[Chunk]:
         text = _normalize_text(text)
         sections = _split_headings(text)
@@ -230,8 +242,12 @@ class MarkdownParagraphSentenceChunker(Chunker):
                             },
                         },
                         "embedding_model": "models/embedding-001",
+                        "parser": {
+                            "version": document_parser_version or "unknown",
+                        },
                     },
-                    "version_alias": "md-multistrategy-1.0:embeddings-001:",
+                    "version_alias": f"{(document_parser_version or 'unknown')}:"
+                    + "md-multistrategy-1.0:embeddings-001:",
                     "domain": "",
                     "document_type": "",
                     "parent_id": str(file_id),

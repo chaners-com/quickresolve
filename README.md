@@ -33,7 +33,7 @@ The application consists of the following microservices:
 - **Database**: PostgreSQL
 - **Vector Database**: Qdrant
 - **Object Storage**: MinIO
-- **AI/ML**: Google Gemini AI
+- **AI/ML**: Google Gemini AI; IBM models for document parsing.
 - **Containerization**: Docker & Docker Compose
 
 ## 📋 Prerequisites
@@ -62,6 +62,13 @@ S3_BUCKET=documents
 
 # Google Gemini AI
 GEMINI_API_KEY=your_gemini_api_key
+
+# Document Parsing Configuration
+# Select parser implementations used at build and runtime
+# Options: complete-pdf-parser-1.0.0 | fast-pdf-parser-1.0.0
+PDF_PARSER_VERSION=complete-pdf-parser-1.0.0
+# Options: complete-docx-parser-1.0.0 | fast-docx-parser-1.0.0
+DOCX_PARSER_VERSION=complete-docx-parser-1.0.0
 ```
 
 ## 🚀 Quick Start
@@ -97,6 +104,8 @@ docker-compose --profile generate-data up -d
 - **AI Agent Service API**: http://localhost:8002
 - **Snapshot Service API**: http://localhost:8003
 - **Management Service API**: http://localhost:8004
+- **Document Parsing Service API**: http://localhost:8005
+- **Chunking Service API**: http://localhost:8006
 - **Qdrant**: http://localhost:6333
 
 ## 📖 Usage Guide
@@ -182,6 +191,26 @@ QuickResolve uses a microservices architecture with 9 main containers, each serv
   - Context retrieval from Qdrant
   - Multi-workspace support
   - Source attribution
+
+#### **Document Parsing Service Container** (`document-parsing-service`)
+- **Purpose**: Parses PDF/DOC/DOCX into clean Markdown using Docling; triggers chunking
+- **Technology**: FastAPI (Python) + Docling (+ optional IBM models)
+- **Port**: 8005
+- **Features**:
+  - Asynchronous parse jobs (non-blocking)
+  - S3 download/upload (original and parsed artifacts)
+  - Parser selection via env (`PDF_PARSER_VERSION`, `DOCX_PARSER_VERSION`)
+  - Error propagation via ingestion status updates (status=3)
+
+#### **Chunking Service Container** (`chunking-service`)
+- **Purpose**: Chunks Markdown into embedding-ready payloads; stores canonical payloads in S3 and forwards to embedding
+- **Technology**: FastAPI (Python) + LangChain splitters
+- **Port**: 8006
+- **Features**:
+  - Section/paragraph/sentence + token-window strategy
+  - UUID v4 `chunk_id`, provenance, hashing
+  - Canonical payload storage in S3 (`payload/{workspace_id}/{chunk_id}.json`)
+  - Forwards to embedding service `/embed-chunk`
 
 ### 🗄️ Infrastructure Services
 
@@ -374,6 +403,7 @@ The snapshot service runs automatically in the background:
 
 - `POST /embed/` - Generate embeddings for a file
 - `GET /search/?query={query}&workspace_id={id}&top_k={k}` - Search documents
+- `POST /embed-chunk` - Embed a single chunk by `workspace_id` and `chunk_id`
 
 ### AI Agent Service (Port 8002)
 
@@ -401,6 +431,19 @@ The snapshot service runs automatically in the background:
 - `POST /services/start` - Start services
 - `POST /services/{name}/restart` - Restart specific service
 - `GET /services/{name}/health` - Check service health
+
+### Document Parsing Service (Port 8005)
+
+- `GET /health` - Service health check
+- `GET /supported-types` - List supported file types
+- `POST /parse/` - Enqueue parse job
+  - Body: `{ s3_key, file_id, workspace_id, original_filename }`
+
+### Chunking Service (Port 8006)
+
+- `GET /health` - Service health check
+- `POST /chunk` - Chunk a parsed Markdown into S3-backed canonical payloads and trigger embedding
+  - Body: `{ s3_key, file_id, workspace_id, original_filename, document_parser_version }`
 
 ## 🖥️ Command Line Interface (CLI)
 
@@ -491,6 +534,13 @@ quickresolve/
 │   ├── Dockerfile           # Service container
 │   ├── test_main.py         # Unit tests
 │   └── README.md            # Service documentation
+├── document-parsing-service/ # PDF/DOC/DOCX → Markdown parsing
+│   ├── main.py              # FastAPI application
+│   ├── Dockerfile           # Conditional installs via parser version
+│   └── src/parsers/         # Parser classes (complete/fast)
+├── chunking-service/         # Markdown chunking to canonical payloads
+│   ├── main.py              # FastAPI application
+│   └── src/chunkers/        # Chunker classes and strategy
 ├── data-generator/          # Sample data generation
 │   ├── generate_dataset.py  # Data generation script
 │   ├── requirements.txt     # Python dependencies

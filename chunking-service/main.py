@@ -57,6 +57,7 @@ class ChunkRequest(BaseModel):
     file_id: int
     workspace_id: int
     original_filename: Optional[str] = None
+    document_parser_version: Optional[str] = None
 
 
 @app.get("/health")
@@ -86,6 +87,8 @@ async def chunk(req: ChunkRequest):
         # 1) Download markdown from S3
         markdown_text = await _s3_get_text(S3_BUCKET, req.s3_key)
 
+        print(f"Markdown text: {markdown_text}")
+
         # 2) Chunk using the Phase 1 strategy via chunker lib
         chunker = MarkdownParagraphSentenceChunker()
         all_chunks = chunker.chunk(
@@ -93,7 +96,10 @@ async def chunk(req: ChunkRequest):
             file_id=req.file_id,
             workspace_id=req.workspace_id,
             s3_key=req.s3_key,
+            document_parser_version=req.document_parser_version,
         )
+
+        print(f"All chunks: {all_chunks}")
 
         # 3) Save chunk JSONs to S3
         put_tasks: List[asyncio.Task] = []

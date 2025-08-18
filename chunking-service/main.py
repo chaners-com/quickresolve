@@ -14,8 +14,8 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from src.chunkers.markdown_paragraph_sentence import (
-    MarkdownParagraphSentenceChunker,
+from src.chunking_strategies.markdown_paragraph_sentence import (
+	MarkdownParagraphSentenceChunkingStrategy,
 )
 
 # App setup
@@ -90,7 +90,7 @@ async def chunk(req: ChunkRequest):
         print(f"Markdown text: {markdown_text}")
 
         # 2) Chunk using the Phase 1 strategy via chunker lib
-        chunker = MarkdownParagraphSentenceChunker()
+        chunker = MarkdownParagraphSentenceChunkingStrategy()
         all_chunks = chunker.chunk(
             text=markdown_text,
             file_id=req.file_id,

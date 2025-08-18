@@ -19,7 +19,7 @@ from langchain.text_splitter import (
     TokenTextSplitter,
 )
 
-from .base import Chunk, Chunker
+from .base import Chunk, ChunkingStrategy
 
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "400"))
 CHUNK_OVERLAP_TOKENS = int(
@@ -79,11 +79,28 @@ def _split_headings(markdown_text: str) -> List[Tuple[str, List[str]]]:
     sections: List[Tuple[str, List[str]]] = []
     for doc in docs:
         section_text = getattr(doc, "page_content", "")
-        headers = []
+        headers: List[str] = []
         meta = getattr(doc, "metadata", {}) or {}
         if isinstance(meta, dict):
-            headers = meta.get("headers", []) or []
-        headers = _normalize_headers(headers)
+            raw_headers = meta.get("headers")
+            if raw_headers:
+                headers = _normalize_headers(raw_headers)
+            else:
+                # Fallback: collect keys like h1/h2/h3 or "header 1", "Header2"
+                candidates: List[Tuple[int, str]] = []
+                for key, value in meta.items():
+                    if not value:
+                        continue
+                    key_norm = str(key).lower().replace(" ", "")
+                    m = re.search(r"(?:^h|header)(\d+)$", key_norm)
+                    if m:
+                        try:
+                            level = int(m.group(1))
+                        except Exception:
+                            level = 99
+                        candidates.append((level, str(value)))
+                if candidates:
+                    headers = [v for _, v in sorted(candidates, key=lambda x: x[0])]
         sections.append((section_text, headers))
     if not sections:
         sections = [(markdown_text, [])]
@@ -192,7 +209,7 @@ def _pack_paragraphs(paragraphs: List[str]) -> List[str]:
     return final_chunks
 
 
-class MarkdownParagraphSentenceChunker(Chunker):
+class MarkdownParagraphSentenceChunkingStrategy(ChunkingStrategy):
     def chunk(
         self,
         *,
@@ -216,6 +233,13 @@ class MarkdownParagraphSentenceChunker(Chunker):
             section_local_index = 0
             for content in chunks_text:
                 chunk_id = str(uuid4()).lower()
+                # Prefix content with section header for context, if present
+                if section_path:
+                    depth = max(1, min(len(section_path), 6))
+                    header_line = f"{'#' * depth} {section_path[-1]}\n"
+                    content_full = f"{header_line}{content}".strip()
+                else:
+                    content_full = content
                 payload: Chunk = {
                     "created_at": int(time.time()),
                     "s3_key": s3_key,
@@ -230,7 +254,7 @@ class MarkdownParagraphSentenceChunker(Chunker):
                     "section_path": section_path,
                     "section_title": section_path[-1] if section_path else "",
                     "section_index": section_local_index,
-                    "tokens": _estimate_tokens_len(content),
+                    "tokens": _estimate_tokens_len(content_full),
                     "overlap_tokens": CHUNK_OVERLAP_TOKENS,
                     "version": {
                         "splitter": {
@@ -254,10 +278,10 @@ class MarkdownParagraphSentenceChunker(Chunker):
                     "keywords": [],
                     "entities": [],
                     "language": "en",
-                    "hash": _sha256_of_content(content),
+                    "hash": _sha256_of_content(content_full),
                     "summary": "",
                     "provenance": {"original_s3_key": s3_key, "parsed": True},
-                    "content": content,
+                    "content": content_full,
                 }
                 all_chunks.append(payload)
                 next_index += 1
@@ -270,4 +294,4 @@ class MarkdownParagraphSentenceChunker(Chunker):
                 d["previous_chunk_id"] = all_chunks[i - 1]["chunk_id"]
             if i < total - 1:
                 d["next_chunk_id"] = all_chunks[i + 1]["chunk_id"]
-        return all_chunks
+        return all_chunks 

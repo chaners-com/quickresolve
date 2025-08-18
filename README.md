@@ -48,7 +48,13 @@ Before running QuickResolve, ensure you have:
 
 ## 🔧 Environment Variables
 
-Create a `.env` file in the root directory with the following variables:
+**IMPORTANT**: Copy the provided `.env.example` file to `.env` and update the values with your actual configuration:
+
+```bash
+cp .env.example .env
+```
+
+Then edit the `.env` file with your actual values. The file contains the following variables:
 
 ```env
 # Database Configuration
@@ -72,6 +78,16 @@ PDF_PARSER_VERSION=complete-pdf-parser-1.0.0
 DOCX_PARSER_VERSION=complete-docx-parser-1.0.0
 ```
 
+### 🔑 Required API Keys
+
+- **Google Gemini API Key**: Required for AI functionality. Get yours at [Google AI Studio](https://makersuite.google.com/app/apikey)
+
+### 📝 Environment Setup Steps
+
+1. **Copy the example file**: `cp .env.example .env`
+2. **Edit the .env file**: Update all placeholder values with your actual configuration
+3. **Never commit .env**: The .env file is already in .gitignore for security
+
 ## 🚀 Quick Start
 
 ### 1. Clone and Setup
@@ -83,7 +99,12 @@ cd quickresolve
 
 ### 2. Create Environment File
 
-Create a `.env` file with your configuration (see Environment Variables section above).
+Copy the example environment file and configure it:
+
+```bash
+cp .env.example .env
+# Edit .env with your actual configuration values
+```
 
 ### 3. Start the Application
 

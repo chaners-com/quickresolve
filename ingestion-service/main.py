@@ -179,7 +179,8 @@ async def create_upload_file(
 
     try:
         if filename_lower.endswith(".md"):
-            # Forward MD files to redaction-service (pass-through -> chunking-service)
+            # Forward MD files to redaction-service
+            # (pass-through -> chunking-service)
             async with httpx.AsyncClient(timeout=30.0) as client:
                 await client.post(
                     f"{redaction_service_url}/redact",

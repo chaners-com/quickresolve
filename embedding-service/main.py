@@ -202,6 +202,12 @@ async def embed_chunk(req: EmbedChunkRequest):
             status_code=500, detail=f"Failed to generate chunk embedding: {e}"
         )
 
+    # Ensure version.embedding_model is populated by embedding-service
+    version = payload.get("version") or {}
+    if isinstance(version, dict):
+        version["embedding_model"] = embedding_model
+        payload["version"] = version
+
     try:
         qdrant_client.upsert(
             collection_name=QDRANT_COLLECTION_NAME,

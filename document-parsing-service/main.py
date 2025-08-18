@@ -19,7 +19,7 @@ from src.parsers.registry import PARSER_REGISTRY, get_parser_class
 app = FastAPI(
     title="Document Parsing Service",
     description="""Parses PDF/DOC/DOCX to Markdown,
-    uploads to S3, and forwards to the chunking service.""",
+    uploads to S3, and forwards to the redaction service (then chunking).""",
 )
 
 # CORS
@@ -41,8 +41,8 @@ PUBLIC_S3_ENDPOINT = os.getenv("PUBLIC_S3_ENDPOINT")
 ingestion_service_url = os.getenv(
     "INGESTION_SERVICE_URL", "http://ingestion-service:8000"
 )
-chunking_service_url = os.getenv(
-    "CHUNKING_SERVICE_URL", "http://chunking-service:8006"
+redaction_service_url = os.getenv(
+    "REDACTION_SERVICE_URL", "http://redaction-service:8007"
 )
 
 s3_client = None
@@ -114,7 +114,7 @@ async def _notify_chunking_service(
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             await client.post(
-                f"{chunking_service_url}/chunk",
+                f"{redaction_service_url}/redact",
                 json={
                     "s3_key": parsed_s3_key,
                     "file_id": file_id,
@@ -126,7 +126,7 @@ async def _notify_chunking_service(
     except Exception as e:
         # mark failure so UI is notified; background task should not raise
         await _update_file_status_async(file_id, 3)
-        print(f"Failed to notify chunking-service for file {file_id}: {e}")
+        print(f"Failed to notify redaction-service for file {file_id}: {e}")
 
 
 async def _run_parse_job(request: ParseRequest) -> None:

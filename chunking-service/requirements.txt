@@ -3,4 +3,5 @@ uvicorn
 pydantic
 boto3
 httpx
-langchain 
+tiktoken
+langchain

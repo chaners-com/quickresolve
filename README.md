@@ -13,6 +13,7 @@ The application consists of the following microservices:
 ### Core Services
 - **Frontend** (`frontend/`): Web interface for file upload, search, and AI chat
 - **Ingestion Service** (`ingestion-service/`): Handles file uploads and metadata management
+- **Redaction Service** (`redaction-service/`): Redacts/masks PII in parsed Markdown before chunking (currently a pass-through proxy to chunking)
 - **Embedding Service** (`embedding-service/`): Generates embeddings using Gemini AI
 - **AI Agent Service** (`ai-agent-service/`): AI-powered customer service chatbot
 - **Data Generator** (`data-generator/`): Generates sample customer service tickets for testing
@@ -43,7 +44,7 @@ Before running QuickResolve, ensure you have:
 - Docker and Docker Compose installed
 - A Google Gemini API key
 - At least 4GB of available RAM
-- Ports 8080, 8000, 8001, 8002, 8003, 8004, 5432, 6333, 9000, 9001 available
+- Ports 8080, 8000, 8001, 8002, 8003, 8004, 8005, 8006, 8007, 5432, 6333, 9000, 9001 available
 
 ## 🔧 Environment Variables
 
@@ -106,6 +107,7 @@ docker-compose --profile generate-data up -d
 - **Management Service API**: http://localhost:8004
 - **Document Parsing Service API**: http://localhost:8005
 - **Chunking Service API**: http://localhost:8006
+- **Redaction Service API**: http://localhost:8007
 - **Qdrant**: http://localhost:6333
 
 ## 📖 Usage Guide
@@ -144,7 +146,7 @@ This will create 100 sample tickets in the `customer_service_data/` directory.
 
 ## 🏗️ Container Architecture & Services
 
-QuickResolve uses a microservices architecture with 9 main containers, each serving a specific purpose:
+QuickResolve uses a microservices architecture with 10 main containers, each serving a specific purpose:
 
 ### 🔧 Core Application Services
 
@@ -170,6 +172,15 @@ QuickResolve uses a microservices architecture with 9 main containers, each serv
   - MinIO file storage integration
   - RESTful API endpoints
 
+#### **Redaction Service Container** (`redaction-service`)
+- **Purpose**: Remove or mask PII in documents prior to chunking.
+- **Technology**: FastAPI (Python)
+- **Port**: 8007
+- **Integration**:
+  - Called by `ingestion-service` for Markdown uploads
+  - Called by `document-parsing-service` for parsed outputs (PDF/DOC/DOCX)
+  - Proxies to `chunking-service` `/chunk`
+
 #### **Embedding Service Container** (`embedding-service`)
 - **Purpose**: Generates AI embeddings for documents using Google Gemini
 - **Technology**: FastAPI (Python) + Google Gemini AI
@@ -193,7 +204,7 @@ QuickResolve uses a microservices architecture with 9 main containers, each serv
   - Source attribution
 
 #### **Document Parsing Service Container** (`document-parsing-service`)
-- **Purpose**: Parses PDF/DOC/DOCX into clean Markdown using Docling; triggers chunking
+- **Purpose**: Parses PDF/DOC/DOCX into clean Markdown using Docling; triggers redaction/chunking
 - **Technology**: FastAPI (Python) + Docling (+ optional IBM models)
 - **Port**: 8005
 - **Features**:
@@ -399,6 +410,12 @@ The snapshot service runs automatically in the background:
 - `POST /uploadfile/?workspace_id={id}` - Upload a file
 - `GET /file-content/?s3_key={key}` - Get file content from S3
 
+### Redaction Service (Port 8007)
+
+- `GET /health` - Service health check
+- `POST /redact` - Currently proxies to the chunking service `/chunk`. Intended to redact/mask PII before chunking in future versions.
+  - Body: `{ s3_key, file_id, workspace_id, original_filename, document_parser_version }`
+
 ### Embedding Service (Port 8001)
 
 - `POST /embed/` - Generate embeddings for a file
@@ -524,6 +541,10 @@ quickresolve/
 │   ├── database.py          # Database models and connection
 │   ├── requirements.txt     # Python dependencies
 │   └── Dockerfile           # Service container
+├── redaction-service/        # PII redaction proxy (pass-through today)
+│   ├── main.py              # FastAPI application
+│   ├── requirements.txt     # Python dependencies
+│   └── Dockerfile           # Service container
 ├── embedding-service/        # AI embedding generation service
 │   ├── main.py              # FastAPI application
 │   ├── requirements.txt     # Python dependencies
@@ -574,6 +595,7 @@ quickresolve/
 # Start only specific services
 docker-compose up -d qdrant db minio
 docker-compose up -d ingestion-service
+docker-compose up -d redaction-service
 docker-compose up -d embedding-service
 docker-compose up -d frontend
 ```
@@ -586,6 +608,7 @@ docker-compose logs -f
 
 # View specific service logs
 docker-compose logs -f ingestion-service
+docker-compose logs -f redaction-service
 docker-compose logs -f embedding-service
 ```
 

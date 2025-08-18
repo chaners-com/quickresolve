@@ -167,10 +167,10 @@ async def create_upload_file(
         db.commit()
         db.refresh(db_file)
 
-    # Route by file type: .md -> chunking-service,
+    # Route by file type: .md -> redaction-service,
     # .pdf/.doc/.docx -> parsing-service
-    chunking_service_url = os.getenv(
-        "CHUNKING_SERVICE_URL", "http://chunking-service:8006"
+    redaction_service_url = os.getenv(
+        "REDACTION_SERVICE_URL", "http://redaction-service:8007"
     )
     parsing_service_url = os.getenv(
         "PARSING_SERVICE_URL", "http://document-parsing-service:8005"
@@ -179,10 +179,10 @@ async def create_upload_file(
 
     try:
         if filename_lower.endswith(".md"):
-            # Forward MD files to chunking-service (pass-through)
+            # Forward MD files to redaction-service (pass-through -> chunking-service)
             async with httpx.AsyncClient(timeout=30.0) as client:
                 await client.post(
-                    f"{chunking_service_url}/chunk",
+                    f"{redaction_service_url}/redact",
                     json={
                         "s3_key": s3_key,
                         "file_id": db_file.id,
@@ -196,7 +196,7 @@ async def create_upload_file(
             or filename_lower.endswith(".docx")
         ):
             # Trigger parsing service; it will upload parsed MD
-            # and then call chunking-service
+            # and then call redaction-service -> chunking-service
             async with httpx.AsyncClient(timeout=60.0) as client:
                 await client.post(
                     f"{parsing_service_url}/parse/",

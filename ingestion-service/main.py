@@ -6,7 +6,14 @@ import httpx
 from database import Base
 from database import File as DBFile
 from database import SessionLocal, User, Workspace, engine
-from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text  # Import text function
@@ -53,6 +60,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Location"],
 )
 
 
@@ -132,9 +140,12 @@ def on_startup():
         print(f"S3 bucket '{S3_BUCKET}' created successfully.")
 
 
-@app.post("/uploadfile/")
+@app.post("/uploadfile/", status_code=202)
 async def create_upload_file(
-    file: UploadFile, workspace_id: int, db: Session = Depends(get_db)
+    file: UploadFile,
+    workspace_id: int,
+    db: Session = Depends(get_db),
+    response: Response = None,
 ):
     workspace = (
         db.query(Workspace).filter(Workspace.id == workspace_id).first()
@@ -180,7 +191,6 @@ async def create_upload_file(
     try:
         if filename_lower.endswith(".md"):
             # Forward MD files to redaction-service
-            # (pass-through -> chunking-service)
             async with httpx.AsyncClient(timeout=30.0) as client:
                 await client.post(
                     f"{redaction_service_url}/redact",
@@ -215,6 +225,12 @@ async def create_upload_file(
             db.refresh(db_file)
     except httpx.HTTPError as e:
         print(f"Failed to trigger downstream service: {e}")
+
+    # Set Location header to status endpoint
+    if response is not None:
+        response.headers["Location"] = (
+            f"http://localhost:8000/files/{db_file.id}/status"
+        )
 
     return {
         "filename": file.filename,

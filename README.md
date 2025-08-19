@@ -1,10 +1,63 @@
 # QuickResolve
 
-A modern document search and retrieval system built with microservices architecture, featuring semantic search capabilities powered by Google Gemini AI and vector storage with Qdrant.
+A comprehensive AI-powered document intelligence platform built with modern microservices architecture, featuring advanced semantic search, intelligent document parsing, and conversational AI capabilities powered by Google Gemini AI and vector storage with Qdrant.
+
+## 📊 Project Status
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com/)
+[![Next.js](https://img.shields.io/badge/Next.js-14.2+-black.svg)](https://nextjs.org/)
+[![React](https://img.shields.io/badge/React-18.3+-blue.svg)](https://reactjs.org/)
+[![Docker](https://img.shields.io/badge/Docker-20.10+-blue.svg)](https://www.docker.com/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13+-blue.svg)](https://www.postgresql.org/)
+[![Qdrant](https://img.shields.io/badge/Qdrant-1.9+-green.svg)](https://qdrant.tech/)
+[![CI/CD](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-green.svg)](https://github.com/features/actions)
+
+**Services**: 11 microservices | **Ports**: 15+ endpoints | **AI Models**: Google Gemini | **Database**: PostgreSQL + Qdrant | **Storage**: MinIO S3
 
 ## 🚀 Overview
 
-QuickResolve is a full-stack application that allows users to upload documents, automatically generate embeddings using Google's Gemini AI, perform semantic search across their documents, and interact with an AI-powered customer service chatbot. The system is designed with a microservices architecture for scalability and maintainability.
+QuickResolve is an enterprise-grade document intelligence platform that transforms how organizations manage, search, and interact with their document repositories. Built with a scalable microservices architecture, it combines cutting-edge AI technologies including Google Gemini AI for semantic understanding, advanced document parsing with Docling, intelligent chunking strategies, and a conversational AI agent for natural language document queries. The system automatically processes documents in multiple formats (PDF, DOC, DOCX, Markdown), generates contextual embeddings, and provides lightning-fast semantic search with source attribution. Perfect for knowledge management, customer service automation, research platforms, and enterprise document workflows.
+
+## 🛠️ Languages & Frameworks
+
+### **Backend Technologies**
+- **Python 3.11+**: Core microservices and AI integration
+- **FastAPI**: High-performance web framework for APIs
+- **SQLAlchemy**: Database ORM and connection management
+- **Pydantic**: Data validation and serialization
+
+### **Frontend Technologies**
+- **HTML5/CSS3**: Modern web standards and responsive design
+- **Vanilla JavaScript (ES6+)**: Interactive frontend functionality
+- **Next.js 14**: React-based landing page framework
+- **React 18**: Component-based UI library
+- **TypeScript**: Type-safe JavaScript development
+- **Tailwind CSS**: Utility-first CSS framework
+- **Framer Motion**: Animation and motion library
+
+### **AI & Machine Learning**
+- **Google Gemini AI**: Advanced language models for embeddings and chat
+- **Docling**: Intelligent document parsing and conversion
+- **LangChain**: Document chunking and processing strategies
+- **Vector Search**: High-dimensional similarity search algorithms
+
+### **Infrastructure & DevOps**
+- **Docker**: Containerization and deployment
+- **Docker Compose**: Multi-service orchestration
+- **PostgreSQL**: Relational database management
+- **Qdrant**: Vector database for embeddings
+- **MinIO**: S3-compatible object storage
+- **Nginx**: Web server and reverse proxy
+
+### **Development Tools**
+- **Black**: Python code formatting
+- **isort**: Import statement organization
+- **flake8**: Code linting and style checking
+- **bandit**: Security vulnerability scanning
+- **GitHub Actions**: CI/CD automation
+- **Dependabot**: Automated dependency updates
 
 ## 🏗️ Architecture
 
@@ -12,10 +65,13 @@ The application consists of the following microservices:
 
 ### Core Services
 - **Frontend** (`frontend/`): Web interface for file upload, search, and AI chat
+- **Landing Page** (`landing-next/`): Modern Next.js landing page with Tailwind CSS and Framer Motion
 - **Ingestion Service** (`ingestion-service/`): Handles file uploads and metadata management
 - **Redaction Service** (`redaction-service/`): Redacts/masks PII in parsed Markdown before chunking (currently a pass-through proxy to chunking)
 - **Embedding Service** (`embedding-service/`): Generates embeddings using Gemini AI
 - **AI Agent Service** (`ai-agent-service/`): AI-powered customer service chatbot
+- **Document Parsing Service** (`document-parsing-service/`): Parses PDF/DOC/DOCX into Markdown using Docling
+- **Chunking Service** (`chunking-service/`): Chunks Markdown into embedding-ready payloads
 - **Data Generator** (`data-generator/`): Generates sample customer service tickets for testing
 
 ### Infrastructure Services
@@ -31,11 +87,14 @@ The application consists of the following microservices:
 
 - **Backend**: FastAPI (Python)
 - **Frontend**: Vanilla JavaScript, HTML, CSS
+- **Landing Page**: Next.js 14, React 18, TypeScript, Tailwind CSS, Framer Motion
 - **Database**: PostgreSQL
 - **Vector Database**: Qdrant
 - **Object Storage**: MinIO
-- **AI/ML**: Google Gemini AI; IBM models for document parsing.
+- **AI/ML**: Google Gemini AI; IBM models for document parsing
 - **Containerization**: Docker & Docker Compose
+- **Code Quality**: Black, isort, flake8, bandit
+- **CI/CD**: GitHub Actions with automated testing and security checks
 
 ## 📋 Prerequisites
 
@@ -44,7 +103,7 @@ Before running QuickResolve, ensure you have:
 - Docker and Docker Compose installed
 - A Google Gemini API key
 - At least 4GB of available RAM
-- Ports 8080, 8000, 8001, 8002, 8003, 8004, 8005, 8006, 8007, 5432, 6333, 9000, 9001 available
+- Ports 8080, 8090, 8000, 8001, 8002, 8003, 8004, 8005, 8006, 8007, 5432, 6333, 9000, 9001 available
 
 ## 🔧 Environment Variables
 
@@ -119,6 +178,7 @@ docker-compose --profile generate-data up -d
 ### 4. Access the Application
 
 - **Frontend**: http://localhost:8080
+- **Landing Page**: http://localhost:8090
 - **Chat Interface**: http://localhost:8080/chat
 - **MinIO Console**: http://localhost:9001
 - **Ingestion Service API**: http://localhost:8000
@@ -167,7 +227,7 @@ This will create 100 sample tickets in the `customer_service_data/` directory.
 
 ## 🏗️ Container Architecture & Services
 
-QuickResolve uses a microservices architecture with 10 main containers, each serving a specific purpose:
+QuickResolve uses a microservices architecture with 11 main containers, each serving a specific purpose:
 
 ### 🔧 Core Application Services
 
@@ -181,6 +241,16 @@ QuickResolve uses a microservices architecture with 10 main containers, each ser
   - AI chat interface
   - Responsive design
   - Service resilience (handles backend unavailability gracefully)
+
+#### **Landing Page Container** (`landing-next`)
+- **Purpose**: Modern, responsive landing page showcasing QuickResolve features
+- **Technology**: Next.js 14, React 18, TypeScript, Tailwind CSS, Framer Motion
+- **Port**: 8090
+- **Features**:
+  - Professional landing page design
+  - Smooth animations and transitions
+  - Responsive mobile-first design
+  - Modern UI/UX patterns
 
 #### **Ingestion Service Container** (`ingestion-service`)
 - **Purpose**: Handles file uploads, metadata management, and database operations
@@ -557,6 +627,12 @@ quickresolve/
 │   ├── chat-style.css       # Chat styling
 │   ├── Dockerfile           # Frontend container
 │   └── nginx.conf           # Nginx configuration
+├── landing-next/            # Modern Next.js landing page
+│   ├── app/                 # Next.js app directory
+│   ├── public/              # Static assets
+│   ├── package.json         # Node.js dependencies
+│   ├── Dockerfile           # Landing page container
+│   └── tailwind.config.ts   # Tailwind CSS configuration
 ├── ingestion-service/        # File upload and metadata service
 │   ├── main.py              # FastAPI application
 │   ├── database.py          # Database models and connection
@@ -601,14 +677,38 @@ quickresolve/
 ├── minio_data/              # MinIO storage data
 ├── qdrant_storage/          # Qdrant vector database data
 ├── qdrant_snapshots/        # Snapshot backups
+├── .github/                 # GitHub configuration and workflows
+│   ├── workflows/           # CI/CD pipelines
+│   ├── ISSUE_TEMPLATE/      # Issue templates
+│   └── dependabot.yml       # Dependency updates
 ├── docker-compose.yml       # Service orchestration
 ├── quickresolve-cli.py     # CLI tool for management
+├── pyproject.toml          # Python tool configuration (Black, isort)
+├── .bandit                 # Security linting configuration
 ├── start-chat.sh           # Linux/Mac startup script
 ├── start-chat.bat          # Windows startup script
+├── CHANGELOG.md            # Project changelog
+├── CONTRIBUTING.md         # Contribution guidelines
+├── CODE_OF_CONDUCT.md      # Community code of conduct
+├── SECURITY.md             # Security policy
+├── DESCRIPTION.md           # Repository description
+├── EXPLAINABILITY_DOCUMENTATION.md # Technical documentation
+├── REPOSITORY_SETUP.md     # Repository setup guide
+├── TOPICS.md               # Repository topics
 └── README.md               # This file
 ```
 
 ## 🔧 Development
+
+### Code Quality Tools
+
+QuickResolve uses several tools to maintain code quality:
+
+- **Black**: Code formatting (line length: 79, Python 3.11+)
+- **isort**: Import sorting (Black-compatible profile)
+- **flake8**: Linting and style checking
+- **bandit**: Security vulnerability scanning
+- **GitHub Actions**: Automated CI/CD pipeline
 
 ### Running Services Individually
 
@@ -619,6 +719,7 @@ docker-compose up -d ingestion-service
 docker-compose up -d redaction-service
 docker-compose up -d embedding-service
 docker-compose up -d frontend
+docker-compose up -d landing-next
 ```
 
 ### Viewing Logs
@@ -644,6 +745,16 @@ docker-compose down -v
 ```
 
 ## 🧪 Testing
+
+### Automated Testing
+
+QuickResolve includes a comprehensive CI/CD pipeline:
+
+- **Automated Testing**: Runs on every push and pull request
+- **Code Quality Checks**: Black, isort, flake8, bandit
+- **Security Scanning**: Automated vulnerability detection
+- **Coverage Reports**: Test coverage tracking
+- **Docker Builds**: Automated container builds
 
 ### Manual Testing
 
@@ -682,6 +793,8 @@ curl "http://localhost:8001/search/?query=password%20reset&workspace_id=1&top_k=
   - Implementing rate limiting
   - Securing API keys and credentials
   - Adding input validation and sanitization
+- Automated security scanning with bandit
+- Regular dependency updates via Dependabot
 
 ## 🐛 Troubleshooting
 
@@ -713,8 +826,18 @@ docker-compose exec db psql -U $POSTGRES_USER -d $POSTGRES_DB
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+4. Ensure code quality tools pass
+5. Test thoroughly
+6. Submit a pull request
+
+### Development Standards
+
+- Follow Black formatting (79 character line length)
+- Use isort for import organization
+- Pass all flake8 linting checks
+- Ensure bandit security checks pass
+- Write tests for new functionality
+- Update documentation as needed
 
 ## 📄 License
 
@@ -726,6 +849,7 @@ For issues and questions:
 1. Check the troubleshooting section
 2. Review service logs
 3. Open an issue on the repository
+4. Check the comprehensive documentation
 
 ---
 

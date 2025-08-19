@@ -84,9 +84,6 @@ minio_data/
 # Customer service data - INCLUDED
 customer_service_data/
 
-# Qdrant snapshots - INCLUDED
-qdrant_snapshots/
-
 # Note: The above data directories are currently INCLUDED in Git tracking
 # to ensure they are available from any remote location.
 # If you want to exclude them (e.g., for large repositories), uncomment the lines above. 

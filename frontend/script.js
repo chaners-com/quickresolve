@@ -46,12 +46,12 @@ function sleep(ms) {
 function setOverall(done, total, failed) {
     if (!overallStatus) return;
     overallStatus.className = '';
+    const finished = done + failed.length === total;
     if (failed.length > 0) {
         overallStatus.textContent = `Overall: Done ${finished} of ${total} / Errors ${failed.length}`;
         overallStatus.className = 'error';
         return;
     }
-    const finished = done + failed.length === total;
     if (finished) {
         overallStatus.textContent = `Overall: Done ${finished} of ${total}`;
     } else {
@@ -60,32 +60,46 @@ function setOverall(done, total, failed) {
     }
 }
 
-async function pollFileStatus(fileId, fileName) {
-    // initial display
-    uploadMessage.className = '';
-    uploadMessage.textContent = `Processing '${fileName}'...`;
+function pollFileStatus(fileName, fileStatusUrl, callback) {
+    setTimeout(() => {
+        // initial display
+        uploadMessage.className = '';
+        uploadMessage.textContent = `Processing '${fileName}'...`;
 
-    while (true) {
-        const data = await handleRequest(
-            `http://localhost:8000/files/${fileId}/status`,
-            { method: 'GET' },
-            `Failed to fetch status for '${fileName}'`
-        );
-        if (!data) break; // stop on error
+        fetch(fileStatusUrl, { method: 'GET' })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch status for '${fileName}'`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                uploadMessage.textContent = `${fileName}: ${statusText(data.status)}`;
 
-        uploadMessage.textContent = `${fileName}: ${statusText(data.status)}`;
+                // If error, capture and stop polling
+                if (data.status === 3) {
+                    //if (!failedFiles.includes(fileName)) failedFiles.push(fileName);
+                    uploadMessage.className = 'error';
+                    if (callback) callback(data);
+                    return;
+                }
 
-        // If error, capture and stop polling
-        if (data.status === 3) {
-            if (!failedFiles.includes(fileName)) failedFiles.push(fileName);
-            uploadMessage.className = 'error';
-            break;
-        }
+                if (data.status === 2) {
+                    if (callback) callback(data);
+                    return; // done
+                }
 
-        if (data.status === 2) break;
+                // keep polling if still processing
+                pollFileStatus(fileName, fileStatusUrl, callback);
+            })
+            .catch(error => {
+                console.error(error);
+                uploadMessage.className = 'error';
+                uploadMessage.textContent = `Failed to fetch status for '${fileName}'`;
+                return;
+            });
 
-        await sleep(1000);
-    }
+    }, 1000);
 }
 
 // Function to find a user by name, or create them if they don't exist
@@ -346,37 +360,35 @@ uploadBtn.addEventListener('click', async () => {
         const formData = new FormData();
         formData.append('file', file);
 
-        const uploadResult = await handleRequest(
+        // Minimal change: use fetch directly here to read the Location header
+        const resp = await fetch(
             `http://localhost:8000/uploadfile/?workspace_id=${workspace.id}`,
-            {
-                method: 'POST',
-                body: formData,
-            },
-            `Failed to upload file '${file.name}'`
+            { method: 'POST', body: formData }
         );
+        const uploadResult = await resp.json().catch(() => null);
+        const fileStatusUrl = resp.headers.get('Location');
+
+        if (!resp.ok && resp.status !== 202) {
+            const detail = (uploadResult && uploadResult.detail) ? uploadResult.detail : `HTTP error! status: ${resp.status}`;
+            uploadMessage.textContent = `Failed to upload file '${file.name}': ${detail}`;
+            uploadMessage.className = 'error';
+            return;
+        }
         
         if (!uploadResult) {
             uploadMessage.textContent += ' Halting upload process.';
             return; // Stop the batch if any file fails to upload
         }
         
-        // Poll until terminal state for this file
-        await pollFileStatus(uploadResult.id, file.name);
-
-        // If file ended in error, reflect and continue to next file
-        const latestStatus = await handleRequest(
-            `http://localhost:8000/files/${uploadResult.id}/status`,
-            { method: 'GET' },
-            `Failed to fetch final status for '${file.name}'`
-        );
-        if (latestStatus && latestStatus.status === 3) {
-            // already tracked in poll; ensure added
-            if (!failedFiles.includes(file.name)) failedFiles.push(file.name);
-        } else if (latestStatus && latestStatus.status === 2) {
-            doneCount += 1;
-        }
-
-        setOverall(doneCount, totalFiles, failedFiles);
+        // Poll until terminal state for this file (existing id-based polling)
+        pollFileStatus(file.name, fileStatusUrl, (final) => {
+            if (final.status === 3 && !failedFiles.includes(file.name)) {
+              failedFiles.push(file.name);
+            } else if (final.status === 2) {
+              doneCount += 1;
+            }
+            setOverall(doneCount, totalFiles, failedFiles);
+        });
     }
     
     if (failedFiles.length > 0) {

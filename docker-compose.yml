@@ -103,30 +103,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
     restart: unless-stopped
 
-  snapshot-service:
-    build: ./snapshot-service
-    ports:
-      - "8003:8003"
-    environment:
-      QDRANT_URL: "http://qdrant:6333"
-      COLLECTION_NAME: "file_embeddings"
-      SNAPSHOT_INTERVAL: "300"
-      MAX_SNAPSHOTS: "10"
-      LOG_LEVEL: "INFO"
-    volumes:
-      - ./qdrant_snapshots:/app/snapshots
-      - ./qdrant_storage:/qdrant_storage:ro
-    restart: unless-stopped
 
-  management-service:
-    build: ./management-service
-    ports:
-      - "8004:8004"
-    environment:
-      LOG_LEVEL: "INFO"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    restart: unless-stopped
 
   document-parsing-service:
     build:

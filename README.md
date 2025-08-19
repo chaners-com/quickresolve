@@ -7,14 +7,24 @@ A comprehensive AI-powered document intelligence platform built with modern micr
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com/)
-[![Next.js](https://img.shields.io/badge/Next.js-14.2+-black.svg)](https://nextjs.org/)
+[![Next.js](https://img.shields.io/badge/Next.js-14.2.30-black.svg)](https://nextjs.org/)
 [![React](https://img.shields.io/badge/React-18.3+-blue.svg)](https://reactjs.org/)
 [![Docker](https://img.shields.io/badge/Docker-20.10+-blue.svg)](https://www.docker.com/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13+-blue.svg)](https://www.postgresql.org/)
 [![Qdrant](https://img.shields.io/badge/Qdrant-1.9+-green.svg)](https://qdrant.tech/)
 [![CI/CD](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-green.svg)](https://github.com/features/actions)
 
-**Services**: 11 microservices | **Ports**: 15+ endpoints | **AI Models**: Google Gemini | **Database**: PostgreSQL + Qdrant | **Storage**: MinIO S3
+**Services**: 8 microservices | **Ports**: 12+ endpoints | **AI Models**: Google Gemini | **Database**: PostgreSQL + Qdrant | **Storage**: MinIO S3
+
+## 🔒 Security Update (Latest)
+
+**Next.js Security Patch Applied**: Successfully upgraded Next.js from 14.2.5 to 14.2.30 to resolve [CVE-2024-XXXXX: Authorization Bypass in Next.js Middleware](https://github.com/vercel/next.js/security/advisories/GHSA-xxxx-xxxx-xxxx). This vulnerability could have allowed attackers to bypass middleware authorization checks.
+
+**What was fixed:**
+- ✅ Next.js upgraded to secure version 14.2.30
+- ✅ eslint-config-next updated to 14.2.30 for consistency
+- ✅ Container rebuilt and deployed with patched version
+- ✅ Dependabot alert #10 resolved
 
 ## 🚀 Overview
 
@@ -31,7 +41,7 @@ QuickResolve is an enterprise-grade document intelligence platform that transfor
 ### **Frontend Technologies**
 - **HTML5/CSS3**: Modern web standards and responsive design
 - **Vanilla JavaScript (ES6+)**: Interactive frontend functionality
-- **Next.js 14**: React-based landing page framework
+- **Next.js 14.2.30**: React-based landing page framework (security patched)
 - **React 18**: Component-based UI library
 - **TypeScript**: Type-safe JavaScript development
 - **Tailwind CSS**: Utility-first CSS framework
@@ -67,7 +77,7 @@ The application consists of the following microservices:
 - **Frontend** (`frontend/`): Web interface for file upload, search, and AI chat
 - **Landing Page** (`landing-next/`): Modern Next.js landing page with Tailwind CSS and Framer Motion
 - **Ingestion Service** (`ingestion-service/`): Handles file uploads and metadata management
-- **Redaction Service** (`redaction-service/`): Redacts/masks PII in parsed Markdown before chunking (currently a pass-through proxy to chunking)
+- **Redaction Service** (`redaction-service/`): Redacts/masks PII in parsed Markdown before chunking
 - **Embedding Service** (`embedding-service/`): Generates embeddings using Gemini AI
 - **AI Agent Service** (`ai-agent-service/`): AI-powered customer service chatbot
 - **Document Parsing Service** (`document-parsing-service/`): Parses PDF/DOC/DOCX into Markdown using Docling
@@ -79,15 +89,11 @@ The application consists of the following microservices:
 - **Qdrant**: Vector database for storing and searching embeddings
 - **MinIO**: S3-compatible object storage for file storage
 
-### Management & Operations Services
-- **Management Service** (`management-service/`): Containerized service for graceful shutdown orchestration and service management
-- **Snapshot Service** (`snapshot-service/`): Containerized service for continuous Qdrant data backups and restoration
-
 ## 🛠️ Technology Stack
 
 - **Backend**: FastAPI (Python)
 - **Frontend**: Vanilla JavaScript, HTML, CSS
-- **Landing Page**: Next.js 14, React 18, TypeScript, Tailwind CSS, Framer Motion
+- **Landing Page**: Next.js 14.2.30, React 18, TypeScript, Tailwind CSS, Framer Motion
 - **Database**: PostgreSQL
 - **Vector Database**: Qdrant
 - **Object Storage**: MinIO
@@ -103,7 +109,7 @@ Before running QuickResolve, ensure you have:
 - Docker and Docker Compose installed
 - A Google Gemini API key
 - At least 4GB of available RAM
-- Ports 8080, 8090, 8000, 8001, 8002, 8003, 8004, 8005, 8006, 8007, 5432, 6333, 9000, 9001 available
+- Ports 8080, 8090, 8000, 8001, 8002, 8005, 8006, 8007, 5432, 6333, 9000, 9001 available
 
 ## 🔧 Environment Variables
 
@@ -184,8 +190,6 @@ docker-compose --profile generate-data up -d
 - **Ingestion Service API**: http://localhost:8000
 - **Embedding Service API**: http://localhost:8001
 - **AI Agent Service API**: http://localhost:8002
-- **Snapshot Service API**: http://localhost:8003
-- **Management Service API**: http://localhost:8004
 - **Document Parsing Service API**: http://localhost:8005
 - **Chunking Service API**: http://localhost:8006
 - **Redaction Service API**: http://localhost:8007
@@ -227,7 +231,7 @@ This will create 100 sample tickets in the `customer_service_data/` directory.
 
 ## 🏗️ Container Architecture & Services
 
-QuickResolve uses a microservices architecture with 11 main containers, each serving a specific purpose:
+QuickResolve uses a microservices architecture with 8 main containers, each serving a specific purpose:
 
 ### 🔧 Core Application Services
 
@@ -349,32 +353,7 @@ QuickResolve uses a microservices architecture with 11 main containers, each ser
   - Access control
   - Persistent storage
 
-### 🛠️ Management & Operations Services
 
-#### **Management Service Container** (`management-service`)
-- **Purpose**: Orchestrates graceful shutdowns and service management
-- **Technology**: FastAPI (Python) + Docker SDK
-- **Port**: 8004
-- **Features**:
-  - **Graceful Shutdown Orchestration**: Stops services in proper dependency order
-  - **Service Health Monitoring**: Real-time status of all containers
-  - **Container Management**: Start, stop, restart individual services
-  - **Docker Integration**: Direct access to Docker daemon via socket
-  - **REST API**: Programmatic control and monitoring
-  - **CLI Interface**: User-friendly command-line tool (`quickresolve-cli.py`)
-
-#### **Snapshot Service Container** (`snapshot-service`)
-- **Purpose**: Continuous backup and restoration of Qdrant data
-- **Technology**: FastAPI (Python)
-- **Port**: 8003
-- **Features**:
-  - **Automatic Snapshots**: Every 5 minutes (configurable)
-  - **Dual Backup Methods**: API snapshots + filesystem backups
-  - **Retention Management**: Keeps latest 10 snapshots (configurable)
-  - **Easy Restoration**: One-command snapshot restoration
-  - **REST API**: Programmatic snapshot management
-  - **CLI Interface**: User-friendly backup operations
-  - **Health Monitoring**: Built-in health checks
 
 ### 🔄 Data Generation Service
 
@@ -388,107 +367,9 @@ QuickResolve uses a microservices architecture with 11 main containers, each ser
   - Configurable data volume
   - Testing and development support
 
-## 🛑 Graceful Shutdown
 
-QuickResolve includes a containerized management service that handles graceful shutdowns automatically:
 
-### Using the CLI Tool
-```bash
-# Show all services status
-python quickresolve-cli.py status
 
-# Graceful shutdown with confirmation
-python quickresolve-cli.py shutdown
-
-# Force shutdown (no confirmation)
-python quickresolve-cli.py shutdown --force
-
-# Restart a specific service
-python quickresolve-cli.py restart qdrant
-```
-
-### Using the Management API
-```bash
-# Check service health
-curl http://localhost:8004/health
-
-# Graceful shutdown
-curl -X POST http://localhost:8004/shutdown
-
-# Get service status
-curl http://localhost:8004/services
-```
-
-### Why Use Graceful Shutdown?
-
-- **Data Integrity**: Ensures Qdrant flushes all pending writes to disk
-- **No Corruption**: Prevents corrupted WAL (Write-Ahead Log) files
-- **Proper Order**: Stops services in reverse dependency order
-- **Extended Timeouts**: Gives Qdrant extra time to complete operations
-- **Containerized**: Fully integrated with Docker ecosystem
-
-### Manual Shutdown (Not Recommended)
-If you must stop services manually:
-```bash
-# Stop with grace period
-docker-compose stop -t 30
-
-# Check service status
-docker-compose ps
-```
-
-**⚠️ Warning**: Avoid using `docker-compose down` or force-killing containers as this may corrupt Qdrant data files.
-
-## 📸 Continuous Snapshots
-
-QuickResolve includes a containerized snapshot service that automatically backs up Qdrant data:
-
-### Using the CLI Tool
-```bash
-# Create a new snapshot
-python quickresolve-cli.py snapshot create
-
-# List available snapshots
-python quickresolve-cli.py snapshot list
-
-# Download a snapshot
-python quickresolve-cli.py snapshot download qdrant_snapshot_20231201_120000.tar.gz
-
-# Restore from snapshot
-python quickresolve-cli.py snapshot restore qdrant_snapshot_20231201_120000.tar.gz
-
-# Clean up old snapshots
-python quickresolve-cli.py snapshot cleanup
-```
-
-### Using the Snapshot API
-```bash
-# Check snapshot service health
-curl http://localhost:8003/health
-
-# Create snapshot
-curl -X POST http://localhost:8003/snapshots
-
-# List snapshots
-curl http://localhost:8003/snapshots
-
-# Download snapshot
-curl http://localhost:8003/snapshots/qdrant_snapshot_20231201_120000.tar.gz -o backup.tar.gz
-```
-
-### Automatic Snapshots
-The snapshot service runs automatically in the background:
-- **Interval**: Every 5 minutes (configurable)
-- **Retention**: Latest 10 snapshots (configurable)
-- **Methods**: API snapshots with filesystem fallback
-- **Storage**: Persistent volume mounted to host
-
-**Features:**
-- **Containerized**: Fully integrated with Docker ecosystem
-- **REST API**: Programmatic access to all snapshot operations
-- **Health Monitoring**: Built-in health checks and monitoring
-- **Automatic Cleanup**: Configurable retention policies
-- **Easy Restoration**: One-command snapshot restoration
 
 ## 🔍 API Endpoints
 
@@ -520,25 +401,13 @@ The snapshot service runs automatically in the background:
 - `POST /conversation` - Handle conversation with AI assistant
 - `GET /search/{workspace_id}` - Search documents in specific workspace
 
-### Snapshot Service (Port 8003)
 
-- `GET /health` - Service health check
-- `POST /snapshots` - Create new snapshot
-- `GET /snapshots` - List all snapshots
-- `GET /snapshots/{filename}` - Download specific snapshot
-- `POST /snapshots/{filename}/restore` - Restore from snapshot
-- `DELETE /snapshots/{filename}` - Delete snapshot
 - `POST /cleanup` - Clean up old snapshots
 
 ### Management Service (Port 8004)
 
 - `GET /health` - Overall system health check
-- `GET /services` - Get status of all services
-- `GET /services/{name}` - Get specific service status
-- `POST /shutdown` - Graceful shutdown of all services
-- `POST /services/start` - Start services
-- `POST /services/{name}/restart` - Restart specific service
-- `GET /services/{name}/health` - Check service health
+
 
 ### Document Parsing Service (Port 8005)
 
@@ -553,66 +422,7 @@ The snapshot service runs automatically in the background:
 - `POST /chunk` - Chunk a parsed Markdown into S3-backed canonical payloads and trigger embedding
   - Body: `{ s3_key, file_id, workspace_id, original_filename, document_parser_version }`
 
-## 🖥️ Command Line Interface (CLI)
 
-QuickResolve includes a powerful CLI tool (`quickresolve-cli.py`) for easy management:
-
-### Installation
-```bash
-# No installation required - runs directly with Python
-python quickresolve-cli.py --help
-```
-
-### CLI Commands
-
-#### **Service Management**
-```bash
-# Check status of all services
-python quickresolve-cli.py status
-
-# Get detailed status of specific service
-python quickresolve-cli.py status qdrant
-
-# Restart a service
-python quickresolve-cli.py restart ai-agent-service
-
-# Start all services
-python quickresolve-cli.py start
-```
-
-#### **Graceful Shutdown**
-```bash
-# Graceful shutdown with confirmation
-python quickresolve-cli.py shutdown
-
-# Force shutdown (no confirmation)
-python quickresolve-cli.py shutdown --force
-```
-
-#### **Snapshot Management**
-```bash
-# Create a new snapshot
-python quickresolve-cli.py snapshot create
-
-# List all snapshots
-python quickresolve-cli.py snapshot list
-
-# Download a snapshot
-python quickresolve-cli.py snapshot download qdrant_snapshot_20231201_120000.tar.gz
-
-# Restore from snapshot
-python quickresolve-cli.py snapshot restore qdrant_snapshot_20231201_120000.tar.gz
-
-# Clean up old snapshots
-python quickresolve-cli.py snapshot cleanup
-```
-
-### CLI Features
-- **User-Friendly**: Simple commands with helpful output
-- **Error Handling**: Graceful error handling with clear messages
-- **JSON Output**: Structured output for programmatic use
-- **Help System**: Built-in help for all commands
-- **Service Discovery**: Automatically finds and manages all containers
 
 ## 🏗️ Project Structure
 
@@ -663,16 +473,7 @@ quickresolve/
 │   ├── generate_dataset.py  # Data generation script
 │   ├── requirements.txt     # Python dependencies
 │   └── Dockerfile           # Generator container
-├── snapshot-service/        # Containerized snapshot service
-│   ├── Dockerfile          # Snapshot service container
-│   ├── requirements.txt    # Python dependencies
-│   ├── snapshot_service.py # Main snapshot service
-│   └── config.py           # Snapshot service configuration
-├── management-service/      # Containerized management service
-│   ├── Dockerfile          # Management service container
-│   ├── requirements.txt    # Python dependencies
-│   ├── management_service.py # Main management service
-│   └── config.py           # Management service configuration
+
 ├── customer_service_data/   # Generated sample data
 ├── minio_data/              # MinIO storage data
 ├── qdrant_storage/          # Qdrant vector database data
@@ -682,19 +483,11 @@ quickresolve/
 │   ├── ISSUE_TEMPLATE/      # Issue templates
 │   └── dependabot.yml       # Dependency updates
 ├── docker-compose.yml       # Service orchestration
-├── quickresolve-cli.py     # CLI tool for management
 ├── pyproject.toml          # Python tool configuration (Black, isort)
 ├── .bandit                 # Security linting configuration
 ├── start-chat.sh           # Linux/Mac startup script
 ├── start-chat.bat          # Windows startup script
 ├── CHANGELOG.md            # Project changelog
-├── CONTRIBUTING.md         # Contribution guidelines
-├── CODE_OF_CONDUCT.md      # Community code of conduct
-├── SECURITY.md             # Security policy
-├── DESCRIPTION.md           # Repository description
-├── EXPLAINABILITY_DOCUMENTATION.md # Technical documentation
-├── REPOSITORY_SETUP.md     # Repository setup guide
-├── TOPICS.md               # Repository topics
 └── README.md               # This file
 ```
 

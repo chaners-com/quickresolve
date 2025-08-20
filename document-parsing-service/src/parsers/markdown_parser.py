@@ -7,7 +7,7 @@ from typing import List, Tuple
 
 
 class MarkdownParser:
-    VERSION = "markdown-parser-1.0.0"
+    VERSION = "markdown-parser-1"
 
     @staticmethod
     def parse(content: bytes, context: dict) -> Tuple[str, List[dict]]:

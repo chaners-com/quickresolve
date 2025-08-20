@@ -16,6 +16,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
+from uuid import UUID
 from sqlalchemy import text  # Import text function
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -43,7 +44,7 @@ class WorkspaceResponse(WorkspaceCreate):
 
 
 class FileStatusResponse(BaseModel):
-    file_id: int
+    file_id: UUID
     status: int
 
 
@@ -153,32 +154,42 @@ async def create_upload_file(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    s3_key = f"{workspace.id}/{file.filename}"
+    # 1) Create DB record first to get UUID id
+    db_file = DBFile(
+        name=file.filename,
+        workspace_id=workspace_id,
+        status=1,
+    )
+    db.add(db_file)
+    db.commit()
+    db.refresh(db_file)
 
-    # Overwrite the file in S3
+    # 2) Build S3 key using uuid + original extension
+    _, ext = os.path.splitext(file.filename)
+    ext = (ext or "").lower()
+    s3_key = f"{workspace.id}/{db_file.id}{ext}"
+
+    # 3) Upload the file to S3
     try:
         s3.upload_fileobj(file.file, S3_BUCKET, s3_key)
     except Exception as e:
+        # mark error in DB and surface HTTP 500
+        try:
+            db_file.status = 3
+            db.commit()
+            db.refresh(db_file)
+        except Exception:
+            pass
         raise HTTPException(
             status_code=500, detail=f"Failed to upload to S3: {e}"
         )
 
-    # Check if the file record already exists
-    db_file = db.query(DBFile).filter(DBFile.s3_key == s3_key).first()
+    # 4) Persist s3_key on the file record
+    db_file.s3_key = s3_key
+    db.commit()
+    db.refresh(db_file)
 
-    if not db_file:
-        # Create a new file record if it doesn't exist
-        db_file = DBFile(
-            name=file.filename,
-            s3_key=s3_key,
-            workspace_id=workspace_id,
-            status=1,
-        )
-        db.add(db_file)
-        db.commit()
-        db.refresh(db_file)
-
-    # Route by file type: .md -> redaction-service,
+    # 5) Route by file type: .md -> redaction-service,
     # .pdf/.doc/.docx -> parsing-service
     redaction_service_url = os.getenv(
         "REDACTION_SERVICE_URL", "http://redaction-service:8007"
@@ -196,7 +207,7 @@ async def create_upload_file(
                     f"{redaction_service_url}/redact",
                     json={
                         "s3_key": s3_key,
-                        "file_id": db_file.id,
+                        "file_id": str(db_file.id),
                         "workspace_id": workspace_id,
                         "original_filename": file.filename,
                     },
@@ -213,7 +224,7 @@ async def create_upload_file(
                     f"{parsing_service_url}/parse/",
                     json={
                         "s3_key": s3_key,
-                        "file_id": db_file.id,
+                        "file_id": str(db_file.id),
                         "workspace_id": workspace_id,
                         "original_filename": file.filename,
                     },
@@ -226,7 +237,7 @@ async def create_upload_file(
     except httpx.HTTPError as e:
         print(f"Failed to trigger downstream service: {e}")
 
-    # Set Location header to status endpoint
+    # 6) Set Location header to status endpoint
     if response is not None:
         response.headers["Location"] = (
             f"http://localhost:8000/files/{db_file.id}/status"
@@ -336,7 +347,7 @@ async def get_all_workspaces(db: Session = Depends(get_db)):
 
 
 @app.get("/files/{file_id}/status", response_model=FileStatusResponse)
-async def get_file_status(file_id: int, db: Session = Depends(get_db)):
+async def get_file_status(file_id: UUID, db: Session = Depends(get_db)):
     file = db.query(DBFile).filter(DBFile.id == file_id).first()
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
@@ -345,7 +356,7 @@ async def get_file_status(file_id: int, db: Session = Depends(get_db)):
 
 @app.put("/files/{file_id}/status", response_model=FileStatusResponse)
 async def update_file_status(
-    file_id: int,
+    file_id: UUID,
     status: int = Query(..., ge=1, le=3),
     db: Session = Depends(get_db),
 ):

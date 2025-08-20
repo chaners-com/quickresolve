@@ -18,7 +18,7 @@ from qdrant_client.http.exceptions import UnexpectedResponse
 
 class FileInfo(BaseModel):
     s3_key: str
-    file_id: int
+    file_id: str
     workspace_id: int
 
 
@@ -101,7 +101,7 @@ def startup_event():
         )
 
 
-async def _update_file_status_async(file_id: int, status: int):
+async def _update_file_status_async(file_id: str, status: int):
     """Asynchronously update file status in ingestion service."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:

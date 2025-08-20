@@ -10,6 +10,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
+from sqlalchemy.dialects.postgresql import UUID
+from uuid import uuid4
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
 
@@ -42,7 +44,7 @@ class Workspace(Base):
 
 class File(Base):
     __tablename__ = "files"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, index=True, default=uuid4)
     name = Column(String, index=True)
     s3_key = Column(String, unique=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"))

@@ -8,7 +8,7 @@ from typing import List, Tuple
 
 
 class CompletePDFParser:
-    VERSION = "complete-pdf-parser-1.0.0"
+    VERSION = "complete-pdf-parser-1"
 
     @staticmethod
     async def parse(

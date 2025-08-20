@@ -61,7 +61,7 @@ def on_startup():
 
 class ParseRequest(BaseModel):
     s3_key: str
-    file_id: int
+    file_id: str
     workspace_id: int
     original_filename: str
 
@@ -69,10 +69,10 @@ class ParseRequest(BaseModel):
 class ParseAck(BaseModel):
     accepted: bool
     workspace_id: int
-    file_id: int
+    file_id: str
 
 
-async def _update_file_status_async(file_id: int, status: int):
+async def _update_file_status_async(file_id: str, status: int):
     """Asynchronously update file status in ingestion service."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -106,7 +106,7 @@ async def _upload_to_s3(
 
 async def _notify_chunking_service(
     parsed_s3_key: str,
-    file_id: int,
+    file_id: str,
     workspace_id: int,
     original_filename: str,
     document_parser_version: str,
@@ -117,7 +117,7 @@ async def _notify_chunking_service(
                 f"{redaction_service_url}/redact",
                 json={
                     "s3_key": parsed_s3_key,
-                    "file_id": file_id,
+                    "file_id": str(file_id),
                     "workspace_id": workspace_id,
                     "original_filename": original_filename,
                     "document_parser_version": document_parser_version,

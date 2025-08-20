@@ -29,7 +29,7 @@ CHUNKING_SERVICE_URL = os.getenv(
 
 class ChunkRequest(BaseModel):
     s3_key: str
-    file_id: int
+    file_id: str
     workspace_id: int
     original_filename: Optional[str] = None
     document_parser_version: Optional[str] = None

@@ -10,8 +10,8 @@ WORKDIR /app
 RUN pip install --upgrade pip setuptools wheel
 RUN pip install fastapi uvicorn pydantic boto3 httpx
 
-# --- Example: conditional installs based on parser versions (build-time) ---
-# NOTE: To use these at build time, pass build args from compose:
+# --- Conditional installs based on parser versions (build-time) ---
+# NOTE: To use these at build time, pass build args from compose, example:
 #   services:
 #     document-parsing-service:
 #       build:
@@ -19,8 +19,8 @@ RUN pip install fastapi uvicorn pydantic boto3 httpx
 #         args:
 #           PDF_PARSER_VERSION: ${PDF_PARSER_VERSION}
 #           DOCX_PARSER_VERSION: ${DOCX_PARSER_VERSION}
-# Then uncomment the ARG/ENV and RUN blocks below.
 #
+
 ARG PDF_PARSER_VERSION
 ARG DOCX_PARSER_VERSION
 ENV PDF_PARSER_VERSION=${PDF_PARSER_VERSION}

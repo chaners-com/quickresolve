@@ -79,17 +79,27 @@ async def _s3_put_json(bucket: str, key: str, data_bytes: bytes) -> None:
         Body=data_bytes,
         ContentType="application/json",
     )
+async def _update_file_status_async(file_id: str, status: int):
+    """Asynchronously update file status in ingestion service."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.put(
+                f"{INGESTION_SERVICE_URL}/files/{file_id}/status",
+                params={"status": status},
+            )
+    except Exception as e:
+        # Log but don't fail the embedding request
+        print(
+            f"""Warning: failed to update file status for
+        {file_id}: {e}"""
+        )
 
-
-@app.post("/chunk")
-async def chunk(req: ChunkRequest):
+async def _process_chunk(req: ChunkRequest):
     try:
         # 1) Download markdown from S3
         markdown_text = await _s3_get_text(S3_BUCKET, req.s3_key)
 
-        print(f"Markdown text: {markdown_text}")
-
-        # 2) Chunk using the Phase 1 strategy via chunker lib
+        # 2) Chunk using the strategy
         chunker = MarkdownParagraphSentenceChunkingStrategy()
         all_chunks = chunker.chunk(
             text=markdown_text,
@@ -98,8 +108,6 @@ async def chunk(req: ChunkRequest):
             s3_key=req.s3_key,
             document_parser_version=req.document_parser_version,
         )
-
-        print(f"All chunks: {all_chunks}")
 
         # 3) Save chunk JSONs to S3
         put_tasks: List[asyncio.Task] = []
@@ -122,23 +130,22 @@ async def chunk(req: ChunkRequest):
                 )
                 for chunk in all_chunks
             ]
-            responses = await asyncio.gather(*tasks, return_exceptions=True)
-            # Raise if any failed
-            for resp in responses:
-                if isinstance(resp, Exception):
-                    raise resp
-                resp.raise_for_status()
-
-        return {"success": True, "chunks": len(all_chunks)}
+            await asyncio.gather(*tasks, return_exceptions=True)
     except Exception as e:
         # Best-effort: mark status=3 (error) asynchronously
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as httpx_client:
-                await httpx_client.put(
-                    f"{INGESTION_SERVICE_URL}/files/{req.file_id}/status",
-                    params={"status": 3},
-                )
-        except Exception:
-            pass
-        print(f"Chunking failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Chunking failed: {e}")
+        asyncio.create_task(
+            _update_file_status_async(req.file_id, 3)
+        )
+
+
+@app.post("/chunk")
+async def chunk(req: ChunkRequest):
+    # Fire-and-forget background processing
+    asyncio.create_task(_process_chunk(req))
+
+    # Mark file as Done (2) in ingestion-service asynchronously
+    # TODO: File should be marked as done when all vectors indexed.
+    asyncio.create_task(
+        _update_file_status_async(req.file_id, 2)
+    )
+    return {"accepted": True}

@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 import os
+from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
 
 app = FastAPI(
     title="Redaction Service",
-    description=(
-        "Remove/mask PII before chunking."
-    ),
+    description=("Remove/mask PII before chunking."),
 )
 
 app.add_middleware(
@@ -43,14 +41,16 @@ async def health():
 @app.post("/redact")
 async def redact(req: ChunkRequest):
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
+        # Fire-and-forget style:
+        # do not let downstream delay block the 200 response
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # Kick off chunking;
+            # don't await success semantics beyond request send
+            await client.post(
                 f"{CHUNKING_SERVICE_URL}/chunk", json=req.model_dump()
             )
-            resp.raise_for_status()
-            return resp.json()
-    except Exception as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Redaction proxy failed: {e}"
-        )
+    except Exception:
+        # Even if downstream call fails to connect instantly,
+        # we return accepted
+        pass
+    return {"accepted": True}

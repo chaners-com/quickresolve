@@ -17,7 +17,15 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
 
 # Only create engine if DATABASE_URL is provided
 if DATABASE_URL:
-    engine = create_engine(DATABASE_URL)
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
+        max_overflow=int(os.getenv("DB_POOL_MAX_OVERFLOW", "20")),
+        pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "60")),
+        pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),
+        future=True,
+    )
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 else:
     engine = None

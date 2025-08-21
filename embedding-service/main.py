@@ -117,60 +117,6 @@ async def _update_file_status_async(file_id: str, status: int):
         )
 
 
-@app.post("/embed/")
-async def embed_file(file_info: FileInfo):
-    """Downloads a file, generates embeddings, and stores them in Qdrant.
-    On any failure, mark file status=3 via ingestion-service.
-    On success, do not change status.
-    """
-    try:
-        response = s3.get_object(Bucket=S3_BUCKET, Key=file_info.s3_key)
-        file_content = response["Body"].read().decode("utf-8")
-    except Exception as e:
-        asyncio.create_task(_update_file_status_async(file_info.file_id, 3))
-        raise HTTPException(
-            status_code=500, detail=f"Failed to download from S3: {e}"
-        )
-
-    try:
-        embedding = genai.embed_content(
-            model=embedding_model,
-            content=file_content,
-            task_type="retrieval_document",
-        )["embedding"]
-    except Exception as e:
-        asyncio.create_task(_update_file_status_async(file_info.file_id, 3))
-        raise HTTPException(
-            status_code=500, detail=f"Failed to generate embedding: {e}"
-        )
-
-    try:
-        qdrant_client.upsert(
-            collection_name=QDRANT_COLLECTION_NAME,
-            points=[
-                models.PointStruct(
-                    id=file_info.file_id,
-                    vector=embedding,
-                    payload={
-                        "workspace_id": file_info.workspace_id,
-                        "s3_key": file_info.s3_key,
-                    },
-                )
-            ],
-            wait=True,
-        )
-    except Exception as e:
-        asyncio.create_task(_update_file_status_async(file_info.file_id, 3))
-        raise HTTPException(
-            status_code=500, detail=f"Failed to upsert to Qdrant: {e}"
-        )
-
-    # Mark file as Done (2) in ingestion-service asynchronously
-    asyncio.create_task(_update_file_status_async(file_info.file_id, 2))
-
-    return {"message": f"Successfully embedded file {file_info.s3_key}"}
-
-
 @app.post("/embed-chunk")
 async def embed_chunk(req: EmbedChunkRequest):
     """Retrieve canonical chunk payload
@@ -181,6 +127,7 @@ async def embed_chunk(req: EmbedChunkRequest):
         payload_bytes = obj["Body"].read()
         payload = json.loads(payload_bytes.decode("utf-8"))
     except Exception as e:
+        print(f"Failed to fetch chunk payload: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to fetch chunk payload: {e}"
         )
@@ -195,6 +142,7 @@ async def embed_chunk(req: EmbedChunkRequest):
             task_type="retrieval_document",
         )["embedding"]
     except Exception as e:
+        print(f"Failed to generate chunk embedding: {e}")
         asyncio.create_task(
             _update_file_status_async(payload.get("file_id"), 3)
         )
@@ -221,11 +169,8 @@ async def embed_chunk(req: EmbedChunkRequest):
             wait=True,
         )
 
-        # Mark file as Done (2) in ingestion-service asynchronously
-        asyncio.create_task(
-            _update_file_status_async(payload.get("file_id"), 2)
-        )
     except Exception as e:
+        print(f"Failed to upsert chunk to Qdrant: {e}")
         asyncio.create_task(
             _update_file_status_async(payload.get("file_id"), 3)
         )

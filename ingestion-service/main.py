@@ -7,9 +7,7 @@ from uuid import UUID
 
 import boto3
 import httpx
-from database import Base
-from database import File as DBFile
-from database import SessionLocal, User, Workspace, engine
+from shared.database import Base, File as DBFile, SessionLocal, User, Workspace, engine, create_tables
 from fastapi import (
     Depends,
     FastAPI,
@@ -20,42 +18,37 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import text  # Import text function
+from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-# --- Improved Pydantic Models ---
-
-
+# --- Pydantic Models ---
 class UserCreate(BaseModel):
     username: str
-
 
 class UserResponse(UserCreate):
     id: int
     model_config = ConfigDict(from_attributes=True)
 
-
 class WorkspaceCreate(BaseModel):
     name: str
     owner_id: int
-
 
 class WorkspaceResponse(WorkspaceCreate):
     id: int
     model_config = ConfigDict(from_attributes=True)
 
-
 class FileStatusResponse(BaseModel):
     file_id: UUID
     status: int
-
 
 app = FastAPI()
 
 origins = [
     "http://localhost",
     "http://localhost:8080",
+    "http://localhost:3000",
+    "http://localhost:8090",
 ]
 
 app.add_middleware(
@@ -67,11 +60,9 @@ app.add_middleware(
     expose_headers=["Location"],
 )
 
-
 @app.get("/health")
 async def health():
     return {"status": "healthy", "service": "ingestion-service"}
-
 
 def get_db():
     db = SessionLocal()
@@ -80,14 +71,12 @@ def get_db():
     finally:
         db.close()
 
-
 # Global variables for S3
 S3_ENDPOINT = None
 S3_ACCESS_KEY = None
 S3_SECRET_KEY = None
 S3_BUCKET = None
 s3 = None
-
 
 @app.on_event("startup")
 def on_startup():
@@ -118,7 +107,7 @@ def on_startup():
         try:
             # Try to connect to the database
             db = SessionLocal()
-            db.execute(text("SELECT 1"))  # Use text() function
+            db.execute(text("SELECT 1"))
             db.close()
             print("Database is ready.")
             break
@@ -131,8 +120,10 @@ def on_startup():
         print("Could not connect to the database. Exiting.")
         exit(1)
 
-    # Create tables
-    Base.metadata.create_all(bind=engine)
+    # Create tables using shared function
+    print("Creating database tables from ingestion service...")
+    create_tables()
+    print("Database tables created successfully from ingestion service")
 
     # Ensure S3 bucket exists
     try:
@@ -142,7 +133,6 @@ def on_startup():
         print(f"Creating S3 bucket '{S3_BUCKET}'...")
         s3.create_bucket(Bucket=S3_BUCKET)
         print(f"S3 bucket '{S3_BUCKET}' created successfully.")
-
 
 async def _trigger_downstream(
     md: bool, s3_key: str, db_file_id: str, workspace_id: int, filename: str
@@ -179,7 +169,6 @@ async def _trigger_downstream(
     except Exception:
         # best-effort fire-and-forget
         pass
-
 
 @app.post("/uploadfile/", status_code=202)
 async def create_upload_file(
@@ -294,12 +283,10 @@ async def create_upload_file(
         "status": db_file.status,
     }
 
-
 def _copy_stream_to_path(src_fileobj, dst_path: str) -> None:
     src_fileobj.seek(0)
     with open(dst_path, "wb") as out_f:
         shutil.copyfileobj(src_fileobj, out_f, length=1024 * 1024)
-
 
 @app.get("/file-content/")
 async def get_file_content(s3_key: str):
@@ -315,10 +302,7 @@ async def get_file_content(s3_key: str):
             status_code=500, detail=f"Failed to retrieve file from S3: {e}"
         )
 
-
 # --- User and Workspace Endpoints ---
-
-
 @app.post("/users/", response_model=UserResponse, status_code=201)
 async def create_user(user: UserCreate, db: Session = Depends(get_db)):
     existing_user = (
@@ -326,18 +310,23 @@ async def create_user(user: UserCreate, db: Session = Depends(get_db)):
     )
     if existing_user:
         raise HTTPException(
-            status_code=409,  # Conflict
+            status_code=409,
             detail=(
                 "Username already registered. Please choose a different one."
             ),
         )
 
-    db_user = User(**user.model_dump())
+    # Create user with minimal required fields for ingestion service compatibility
+    db_user = User(
+        username=user.username,
+        email=f"{user.username}@example.com",  # Temporary email
+        password_hash="temp",  # Temporary password hash
+        is_active=True
+    )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
     return db_user
-
 
 @app.get("/users/", response_model=list[UserResponse])
 async def get_user_by_name(username: str, db: Session = Depends(get_db)):
@@ -347,7 +336,6 @@ async def get_user_by_name(username: str, db: Session = Depends(get_db)):
     """
     user = db.query(User).filter(User.username == username).first()
     return [user] if user else []
-
 
 @app.post("/workspaces/", response_model=WorkspaceResponse, status_code=201)
 async def create_workspace(
@@ -366,7 +354,6 @@ async def create_workspace(
     db.refresh(db_workspace)
     return db_workspace
 
-
 @app.get("/workspaces/", response_model=list[WorkspaceResponse])
 async def get_workspace_by_name(
     name: str, owner_id: int, db: Session = Depends(get_db)
@@ -382,7 +369,6 @@ async def get_workspace_by_name(
     )
     return [workspace] if workspace else []
 
-
 @app.get("/workspaces/all", response_model=list[WorkspaceResponse])
 async def get_all_workspaces(db: Session = Depends(get_db)):
     """
@@ -392,17 +378,13 @@ async def get_all_workspaces(db: Session = Depends(get_db)):
     workspaces = db.query(Workspace).all()
     return workspaces
 
-
 # --- File Status Endpoints ---
-
-
 @app.get("/files/{file_id}/status", response_model=FileStatusResponse)
 async def get_file_status(file_id: UUID, db: Session = Depends(get_db)):
     file = db.query(DBFile).filter(DBFile.id == file_id).first()
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
     return FileStatusResponse(file_id=file.id, status=file.status)
-
 
 @app.put("/files/{file_id}/status", response_model=FileStatusResponse)
 async def update_file_status(

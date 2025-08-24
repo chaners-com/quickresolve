@@ -64,12 +64,38 @@ services:
       - "8080:80"
     restart: unless-stopped
 
+  auth-service:
+    build: ./backend/auth-service
+    ports:
+      - "8003:8000"
+    volumes:
+      - ./shared:/app/shared
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
+      JWT_SECRET: "${JWT_SECRET}"
+      JWT_ALGORITHM: "HS256"
+      JWT_EXPIRATION_HOURS: "168"  # 7 days
+      CORS_ORIGINS: "http://localhost:8090,http://localhost:3000"
+      LOG_LEVEL: "INFO"
+      FORCE_SCHEMA_UPDATE: "true" 
+    depends_on:
+      - db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      
   landing-next:
     build: ./landing-next
     ports:
       - "8090:3000"
     environment:
-      - NODE_ENV=production
+    - NODE_ENV=production
+    - BACKEND_URL=http://auth-service:8000  # Internal Docker network
+    depends_on:
+    - auth-service
     restart: unless-stopped
 
   ingestion-service:
@@ -78,6 +104,8 @@ services:
       dockerfile: ingestion-service/Dockerfile
     ports:
       - "8000:8000"
+    volumes:
+      - ./shared:/app/shared  
     environment:
       DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
       S3_ENDPOINT: "http://minio:9000"
@@ -125,8 +153,6 @@ services:
       OTEL_SDK_DISABLED: "${OTEL_SDK_DISABLED}"
       OTEL_METRICS_ENABLED: "${OTEL_METRICS_ENABLED}"
     restart: unless-stopped
-
-
 
   document-parsing-service:
     build:

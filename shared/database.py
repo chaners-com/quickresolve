@@ -20,7 +20,6 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
 
 # Only create engine if DATABASE_URL is provided
 if DATABASE_URL:
-    print("SUUUUUUIIIIIIIIIIIIIII")
     engine = create_engine(
         DATABASE_URL,
         pool_pre_ping=True,

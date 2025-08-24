@@ -10,11 +10,14 @@
   },
   "dependencies": {
     "framer-motion": "11.2.10",
+    "jsonwebtoken": "^9.0.2",
+    "lucide-react": "^0.263.1",
     "next": "14.2.30",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "20.11.30",
     "@types/react": "18.2.66",
     "autoprefixer": "10.4.19",
@@ -25,5 +28,3 @@
     "typescript": "5.4.5"
   }
 }
-
-

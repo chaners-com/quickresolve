@@ -7,9 +7,13 @@ from uuid import UUID
 
 import boto3
 import httpx
-from database import Base
-from database import File as DBFile
-from database import SessionLocal, User, Workspace, engine
+from shared.database import (
+    File as DBFile,
+    SessionLocal,
+    User,
+    Workspace,
+    create_tables,
+)
 from fastapi import (
     Depends,
     FastAPI,
@@ -43,11 +47,17 @@ class WorkspaceResponse(WorkspaceCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
+class FileStatusResponse(BaseModel):
+    file_id: UUID
+    status: int
+
+
 app = FastAPI()
 
 origins = [
     "http://localhost",
     "http://localhost:8080",
+    "http://localhost:3000",
     "http://localhost:8090",
 ]
 
@@ -135,8 +145,8 @@ def on_startup():
         print("Could not connect to the database. Exiting.")
         exit(1)
 
-    # Create tables
-    Base.metadata.create_all(bind=engine)
+    # Create tables using shared function
+    create_tables()
 
     # Ensure S3 bucket exists
     try:
@@ -350,7 +360,14 @@ async def create_user(user: UserCreate, db: Session = Depends(get_db)):
             ),
         )
 
-    db_user = User(**user.model_dump())
+    # Create user with minimal required fields for ingestion service
+    # compatibility (real users are created by auth-service)
+    db_user = User(
+        username=user.username,
+        email=f"{user.username}@example.com",  # Temporary email
+        password_hash="temp",  # Temporary password hash
+        is_active=True,
+    )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
@@ -409,3 +426,29 @@ async def get_all_workspaces(db: Session = Depends(get_db)):
     """
     workspaces = db.query(Workspace).all()
     return workspaces
+
+
+# --- File Status Endpoints ---
+
+
+@app.get("/files/{file_id}/status", response_model=FileStatusResponse)
+async def get_file_status(file_id: UUID, db: Session = Depends(get_db)):
+    file = db.query(DBFile).filter(DBFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileStatusResponse(file_id=file.id, status=file.status)
+
+
+@app.put("/files/{file_id}/status", response_model=FileStatusResponse)
+async def update_file_status(
+    file_id: UUID,
+    status: int,
+    db: Session = Depends(get_db),
+):
+    file = db.query(DBFile).filter(DBFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    file.status = status
+    db.commit()
+    db.refresh(file)
+    return FileStatusResponse(file_id=file.id, status=file.status)

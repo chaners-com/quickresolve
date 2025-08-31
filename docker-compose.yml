@@ -160,6 +160,16 @@ services:
     profiles:
       - generate-data
 
+  task-service:
+    build: ./task-service
+    ports:
+      - "8010:8010"
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
+    depends_on:
+      - db
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   qdrant_storage: 

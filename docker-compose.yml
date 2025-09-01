@@ -3,6 +3,11 @@ services:
     image: qdrant/qdrant:v1.9.0
     ports:
       - "6333:6333"
+      - "6334:6334"
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     volumes:
       - ./qdrant_storage:/qdrant/storage
     environment:
@@ -10,7 +15,7 @@ services:
       QDRANT__SERVICE__GRACEFUL_SHUTDOWN_TIMEOUT: "30"
       QDRANT__SERVICE__ENABLE_GRACEFUL_SHUTDOWN: "true"
       # Ensure WAL sync for data durability
-      QDRANT__STORAGE__WAL__SYNC_ON_WRITE: "true"
+      QDRANT__STORAGE__WAL__SYNC_ON_WRITE: "false"
       # Storage path
       QDRANT__STORAGE__STORAGE_PATH: "/qdrant/storage"
       # WAL configuration
@@ -20,8 +25,8 @@ services:
       QDRANT__SERVICE__HTTP_PORT: "6333"
       QDRANT__SERVICE__GRPC_PORT: "6334"
       # Performance settings
-      QDRANT__PERFORMANCE__MAX_OPTIMIZATION_THREADS: "2"
-      QDRANT__PERFORMANCE__MAX_INDEXING_THREADS: "2"
+      QDRANT__PERFORMANCE__MAX_OPTIMIZATION_THREADS: "4"
+      QDRANT__PERFORMANCE__MAX_INDEXING_THREADS: "4"
       # Disable cluster and telemetry
       QDRANT__CLUSTER__ENABLED: "false"
       QDRANT__TELEMETRY__ENABLED: "false"

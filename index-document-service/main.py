@@ -202,7 +202,7 @@ async def _create_and_wait_task(
             raise RuntimeError(f"Task {name} {task_id} failed")
 
 
-ASYNC_LIMIT = 10
+ASYNC_LIMIT = 4
 
 
 async def _run_embed_fanout(

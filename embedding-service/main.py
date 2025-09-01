@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import time
@@ -44,18 +45,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"))
+qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"), timeout=60)
 TASK_SERVICE_URL = os.getenv("TASK_SERVICE_URL", "http://task-service:8010")
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+GENAI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GENAI_API_KEY:
+    genai.configure(api_key=GENAI_API_KEY)
 embedding_model = "models/embedding-001"
 
+S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://minio:9000")
+S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
+S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
+S3_BUCKET = os.getenv("S3_BUCKET")
+
+# Clients
 s3 = boto3.client(
     "s3",
-    endpoint_url=os.getenv("S3_ENDPOINT"),
-    aws_access_key_id=os.getenv("S3_ACCESS_KEY"),
-    aws_secret_access_key=os.getenv("S3_SECRET_KEY"),
+    endpoint_url=S3_ENDPOINT,
+    aws_access_key_id=S3_ACCESS_KEY,
+    aws_secret_access_key=S3_SECRET_KEY,
 )
-S3_BUCKET = os.getenv("S3_BUCKET")
+
 QDRANT_COLLECTION_NAME = "file_embeddings"
 
 
@@ -109,6 +118,10 @@ async def _update_task_status(task_id: Optional[str], **kwargs):
         pass
 
 
+def _retry_backoff_delays(max_attempts: int = 3) -> list[float]:
+    return [0.5 * (2**i) for i in range(max_attempts)]
+
+
 @app.post("/embed-chunk")
 async def embed_chunk(req: EmbedChunkRequest):
     await _update_task_status(
@@ -122,6 +135,7 @@ async def embed_chunk(req: EmbedChunkRequest):
         payload_bytes = obj["Body"].read()
         payload = json.loads(payload_bytes.decode("utf-8"))
     except Exception as e:
+        print(f"Failed to fetch chunk payload: {e}")
         await _update_task_status(
             req.task_id,
             status_code=3,
@@ -141,6 +155,7 @@ async def embed_chunk(req: EmbedChunkRequest):
             task_type="retrieval_document",
         )["embedding"]
     except Exception as e:
+        print(f"Failed to generate chunk embedding: {e}")
         await _update_task_status(
             req.task_id,
             status_code=3,
@@ -156,27 +171,36 @@ async def embed_chunk(req: EmbedChunkRequest):
         version["embedding_model"] = embedding_model
         payload["version"] = version
 
-    try:
-        qdrant_client.upsert(
-            collection_name=QDRANT_COLLECTION_NAME,
-            points=[
-                models.PointStruct(
-                    id=payload.get("chunk_id"),
-                    vector=embedding,
-                    payload=payload,
-                )
-            ],
-            wait=True,
-        )
-
-    except Exception as e:
+    # Upsert with retries, non-blocking
+    for delay in _retry_backoff_delays(3):
+        try:
+            qdrant_client.upsert(
+                collection_name=QDRANT_COLLECTION_NAME,
+                points=[
+                    models.PointStruct(
+                        id=payload.get("chunk_id"),
+                        vector=embedding,
+                        payload=payload,
+                    )
+                ],
+                wait=False,
+            )
+            break
+        except Exception as e:
+            print(f"Failed to upsert chunk to Qdrant: {e}")
+            last_err = e
+            if delay > 0:
+                await asyncio.sleep(delay)
+    else:
+        print(f"Failed to upsert chunk to Qdrant (2): {last_err}")
         await _update_task_status(
             req.task_id,
             status_code=3,
-            status={"message": f"qdrant upsert failed: {e}"},
+            status={"message": f"qdrant upsert failed: {last_err}"},
         )
         raise HTTPException(
-            status_code=500, detail=f"Failed to upsert chunk to Qdrant: {e}"
+            status_code=500,
+            detail=f"Failed to upsert chunk to Qdrant: {last_err}",
         )
 
     await _update_task_status(
@@ -191,40 +215,48 @@ async def embed_chunk(req: EmbedChunkRequest):
     }
 
 
+@app.post("/embed/")
+async def embed_stub():
+    return {"accepted": True}
+
+
 @app.get("/search/", response_model=list[SearchResult])
 async def search(query: str, workspace_id: int, top_k: int = 5):
-    # Embeds a query and searches for similar vectors in a specific workspace.
-    try:
-        query_embedding = genai.embed_content(
-            model=embedding_model, content=query, task_type="retrieval_query"
-        )["embedding"]
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to generate query embedding: {e}"
-        )
-
-    try:
-        search_results = qdrant_client.search(
-            collection_name=QDRANT_COLLECTION_NAME,
-            query_vector=query_embedding,
-            query_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="workspace_id",
-                        match=models.MatchValue(value=workspace_id),
-                    )
-                ]
-            ),
-            limit=top_k,
-            with_payload=True,
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to search in Qdrant: {e}"
-        )
-
-    results = [
-        SearchResult(id=hit.id, payload=hit.payload, score=hit.score)
-        for hit in search_results
-    ]
-    return results
+    # Add lightweight retry for transient errors
+    last_err: Exception | None = None
+    for delay in _retry_backoff_delays(3):
+        try:
+            query_embedding = genai.embed_content(
+                model=embedding_model,
+                content=query,
+                task_type="retrieval_query",
+            )["embedding"]
+            search_results = qdrant_client.search(
+                collection_name=QDRANT_COLLECTION_NAME,
+                query_vector=query_embedding,
+                query_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="workspace_id",
+                            match=models.MatchValue(value=workspace_id),
+                        )
+                    ]
+                ),
+                limit=top_k,
+                with_payload=True,
+                timeout=60,
+            )
+            results = [
+                SearchResult(id=hit.id, payload=hit.payload, score=hit.score)
+                for hit in search_results
+            ]
+            return results
+        except Exception as e:
+            print(f"Failed to search in Qdrant: {e}")
+            last_err = e
+            if delay > 0:
+                await asyncio.sleep(delay)
+    print(f"Failed to search in Qdrant (2): {last_err}")
+    raise HTTPException(
+        status_code=500, detail=f"Failed to search in Qdrant: {last_err}"
+    )

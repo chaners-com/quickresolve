@@ -1,4 +1,3 @@
-import asyncio
 import json
 import os
 import time
@@ -31,6 +30,7 @@ class SearchResult(BaseModel):
 class EmbedChunkRequest(BaseModel):
     workspace_id: int
     chunk_id: str
+    task_id: Optional[str] = None
 
 
 # --- App and Clients Setup ---
@@ -45,6 +45,7 @@ app.add_middleware(
 )
 
 qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"))
+TASK_SERVICE_URL = os.getenv("TASK_SERVICE_URL", "http://task-service:8010")
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 embedding_model = "models/embedding-001"
 
@@ -57,9 +58,6 @@ s3 = boto3.client(
 S3_BUCKET = os.getenv("S3_BUCKET")
 QDRANT_COLLECTION_NAME = "file_embeddings"
 
-INGESTION_SERVICE_URL = os.getenv(
-    "INGESTION_SERVICE_URL", "http://ingestion-service:8000"
-)
 
 # --- Health ---
 
@@ -101,33 +99,34 @@ def startup_event():
         )
 
 
-async def _update_file_status_async(file_id: str, status: int):
-    """Asynchronously update file status in ingestion service."""
+async def _update_task_status(task_id: Optional[str], **kwargs):
+    if not task_id:
+        return
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.put(
-                f"{INGESTION_SERVICE_URL}/files/{file_id}/status",
-                params={"status": status},
-            )
-    except Exception as e:
-        # Log but don't fail the embedding request
-        print(
-            f"""Warning: failed to update file status for
-        {file_id}: {e}"""
-        )
+            await client.put(f"{TASK_SERVICE_URL}/task/{task_id}", json=kwargs)
+    except Exception:
+        pass
 
 
 @app.post("/embed-chunk")
 async def embed_chunk(req: EmbedChunkRequest):
-    """Retrieve canonical chunk payload
-    from S3 and upsert embedding by chunk_id."""
+    await _update_task_status(
+        req.task_id, status_code=1, status={"message": "running"}
+    )
+    # Retrieve canonical chunk payload
+    # from S3 and upsert embedding by chunk_id.
     try:
         key = f"{req.workspace_id}/payload/{req.chunk_id}.json"
         obj = s3.get_object(Bucket=S3_BUCKET, Key=key)
         payload_bytes = obj["Body"].read()
         payload = json.loads(payload_bytes.decode("utf-8"))
     except Exception as e:
-        print(f"Failed to fetch chunk payload: {e}")
+        await _update_task_status(
+            req.task_id,
+            status_code=3,
+            status={"message": f"fetch chunk failed: {e}"},
+        )
         raise HTTPException(
             status_code=500, detail=f"Failed to fetch chunk payload: {e}"
         )
@@ -142,9 +141,10 @@ async def embed_chunk(req: EmbedChunkRequest):
             task_type="retrieval_document",
         )["embedding"]
     except Exception as e:
-        print(f"Failed to generate chunk embedding: {e}")
-        asyncio.create_task(
-            _update_file_status_async(payload.get("file_id"), 3)
+        await _update_task_status(
+            req.task_id,
+            status_code=3,
+            status={"message": f"embedding failed: {e}"},
         )
         raise HTTPException(
             status_code=500, detail=f"Failed to generate chunk embedding: {e}"
@@ -170,14 +170,20 @@ async def embed_chunk(req: EmbedChunkRequest):
         )
 
     except Exception as e:
-        print(f"Failed to upsert chunk to Qdrant: {e}")
-        asyncio.create_task(
-            _update_file_status_async(payload.get("file_id"), 3)
+        await _update_task_status(
+            req.task_id,
+            status_code=3,
+            status={"message": f"qdrant upsert failed: {e}"},
         )
         raise HTTPException(
             status_code=500, detail=f"Failed to upsert chunk to Qdrant: {e}"
         )
 
+    await _update_task_status(
+        req.task_id,
+        status_code=2,
+        output={"chunk_id": payload.get("chunk_id")},
+    )
     return {
         "success": True,
         "chunk_id": payload.get("chunk_id"),
@@ -187,8 +193,7 @@ async def embed_chunk(req: EmbedChunkRequest):
 
 @app.get("/search/", response_model=list[SearchResult])
 async def search(query: str, workspace_id: int, top_k: int = 5):
-    """Embeds a query and searches for similar vectors in a specific \
-workspace."""
+    # Embeds a query and searches for similar vectors in a specific workspace.
     try:
         query_embedding = genai.embed_content(
             model=embedding_model, content=query, task_type="retrieval_query"

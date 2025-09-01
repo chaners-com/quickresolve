@@ -11,11 +11,11 @@ from typing import List, Optional
 
 import boto3
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from src.chunking_strategies.markdown_paragraph_sentence import (
-	MarkdownParagraphSentenceChunkingStrategy,
+    MarkdownParagraphSentenceChunkingStrategy,
 )
 
 # App setup
@@ -32,12 +32,7 @@ app.add_middleware(
 )
 
 # Environment
-EMBEDDING_SERVICE_URL = os.getenv(
-    "EMBEDDING_SERVICE_URL", "http://embedding-service:8001"
-)
-INGESTION_SERVICE_URL = os.getenv(
-    "INGESTION_SERVICE_URL", "http://ingestion-service:8000"
-)
+TASK_SERVICE_URL = os.getenv("TASK_SERVICE_URL", "http://task-service:8010")
 S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://minio:9000")
 S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
@@ -58,6 +53,7 @@ class ChunkRequest(BaseModel):
     workspace_id: int
     original_filename: Optional[str] = None
     document_parser_version: Optional[str] = None
+    task_id: Optional[str] = None
 
 
 @app.get("/health")
@@ -79,23 +75,23 @@ async def _s3_put_json(bucket: str, key: str, data_bytes: bytes) -> None:
         Body=data_bytes,
         ContentType="application/json",
     )
-async def _update_file_status_async(file_id: str, status: int):
-    """Asynchronously update file status in ingestion service."""
+
+
+async def _update_task_status(task_id: Optional[str], **kwargs):
+    if not task_id:
+        return
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.put(
-                f"{INGESTION_SERVICE_URL}/files/{file_id}/status",
-                params={"status": status},
-            )
-    except Exception as e:
-        # Log but don't fail the embedding request
-        print(
-            f"""Warning: failed to update file status for
-        {file_id}: {e}"""
-        )
+            await client.put(f"{TASK_SERVICE_URL}/task/{task_id}", json=kwargs)
+    except Exception:
+        pass
+
 
 async def _process_chunk(req: ChunkRequest):
     try:
+        await _update_task_status(
+            req.task_id, status_code=1, status={"message": "running"}
+        )
         # 1) Download markdown from S3
         markdown_text = await _s3_get_text(S3_BUCKET, req.s3_key)
 
@@ -118,23 +114,17 @@ async def _process_chunk(req: ChunkRequest):
         if put_tasks:
             await asyncio.gather(*put_tasks)
 
-        # 4) Forward each chunk to embedding-service using /embed-chunk
-        async with httpx.AsyncClient(timeout=30.0) as httpx_client:
-            tasks = [
-                httpx_client.post(
-                    f"{EMBEDDING_SERVICE_URL}/embed-chunk",
-                    json={
-                        "workspace_id": req.workspace_id,
-                        "chunk_id": chunk["chunk_id"],
-                    },
-                )
-                for chunk in all_chunks
-            ]
-            await asyncio.gather(*tasks, return_exceptions=True)
+        # 4) Mark task done with chunks list in output
+        await _update_task_status(
+            req.task_id,
+            status_code=2,
+            output={"chunks": all_chunks},
+        )
     except Exception as e:
-        # Best-effort: mark status=3 (error) asynchronously
-        asyncio.create_task(
-            _update_file_status_async(req.file_id, 3)
+        await _update_task_status(
+            req.task_id,
+            status_code=3,
+            status={"message": f"chunking failed: {e}"},
         )
 
 
@@ -142,10 +132,4 @@ async def _process_chunk(req: ChunkRequest):
 async def chunk(req: ChunkRequest):
     # Fire-and-forget background processing
     asyncio.create_task(_process_chunk(req))
-
-    # Mark file as Done (2) in ingestion-service asynchronously
-    # TODO: File should be marked as done when all vectors indexed.
-    asyncio.create_task(
-        _update_file_status_async(req.file_id, 2)
-    )
     return {"accepted": True}

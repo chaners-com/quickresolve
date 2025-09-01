@@ -74,17 +74,17 @@ function pollFileStatus(fileName, fileStatusUrl, callback) {
                 return response.json();
             })
             .then(data => {
-                uploadMessage.textContent = `${fileName}: ${statusText(data.status)}`;
+                uploadMessage.textContent = `${fileName}: ${statusText(data.status_code)}`;
 
                 // If error, capture and stop polling
-                if (data.status === 3) {
+                if (data.status_code === 3) {
                     //if (!failedFiles.includes(fileName)) failedFiles.push(fileName);
                     uploadMessage.className = 'error';
                     if (callback) callback(data);
                     return;
                 }
 
-                if (data.status === 2) {
+                if (data.status_code === 2) {
                     if (callback) callback(data);
                     return; // done
                 }
@@ -362,7 +362,7 @@ uploadBtn.addEventListener('click', async () => {
 
         // Minimal change: use fetch directly here to read the Location header
         const resp = await fetch(
-            `http://localhost:8000/uploadfile/?workspace_id=${workspace.id}`,
+            `http://localhost:8000/uploadfile?workspace_id=${workspace.id}`,
             { method: 'POST', body: formData }
         );
         const uploadResult = await resp.json().catch(() => null);
@@ -374,11 +374,8 @@ uploadBtn.addEventListener('click', async () => {
             uploadMessage.className = 'error';
             return;
         }
-        
-        if (!uploadResult) {
-            uploadMessage.textContent += ' Halting upload process.';
-            return; // Stop the batch if any file fails to upload
-        }
+
+        console.log(fileStatusUrl);
         
         // Poll until terminal state for this file (existing id-based polling)
         pollFileStatus(file.name, fileStatusUrl, (final) => {

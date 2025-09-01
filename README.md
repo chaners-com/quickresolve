@@ -77,7 +77,10 @@ The application consists of the following microservices:
 - **Frontend** (`frontend/`): Web interface for file upload, search, and AI chat
 - **Landing Page** (`landing-next/`): Modern Next.js landing page with Tailwind CSS and Framer Motion
 - **Ingestion Service** (`ingestion-service/`): Handles file uploads and metadata management
-- **Redaction Service** (`redaction-service/`): Redacts/masks PII in parsed Markdown before chunking
+- **Task Service** (`task-service/`): General-purpose task queue/dispatcher with HTTP workers registry
+- **Index Document Service** (`index-document-service/`): Orchestrates multi-step indexing pipelines
+- **Redaction Service** (`redaction-service/`): Redacts/masks PII in parsed Markdown before
+ chunking
 - **Embedding Service** (`embedding-service/`): Generates embeddings using Gemini AI
 - **AI Agent Service** (`ai-agent-service/`): AI-powered customer service chatbot
 - **Document Parsing Service** (`document-parsing-service/`): Parses PDF/DOC/DOCX into Markdown using Docling
@@ -188,6 +191,8 @@ docker-compose --profile generate-data up -d
 - **Chat Interface**: http://localhost:8080/chat
 - **MinIO Console**: http://localhost:9001
 - **Ingestion Service API**: http://localhost:8000
+- **Task Service API**: http://localhost:8010
+- **Index Document Service API**: http://localhost:8011
 - **Embedding Service API**: http://localhost:8001
 - **AI Agent Service API**: http://localhost:8002
 - **Document Parsing Service API**: http://localhost:8005
@@ -267,6 +272,26 @@ QuickResolve uses a microservices architecture with 8 main containers, each serv
   - MinIO file storage integration
   - RESTful API endpoints
 
+#### **Task Service Container** (`task-service`)
+- **Purpose**: General-purpose task queue and HTTP dispatcher; central status store
+- **Technology**: FastAPI (Python) + SQLAlchemy
+- **Port**: 8010
+- **Features**:
+  - Enqueue tasks via `POST /task`
+  - Poll status via `GET /task/{id}` and `GET /task/{id}/status`
+  - Update status/output via `PUT /task/{id}`
+  - HTTP worker routing via registry (see `task-service/registry.py`)
+  - CORS enabled for browser polling
+
+#### **Index Document Service Container** (`index-document-service`)
+- **Purpose**: Orchestrates indexing pipeline steps (parse → redact → chunk → embed)
+- **Technology**: FastAPI (Python)
+- **Port**: 8011
+- **Features**:
+  - Sequential step execution with retries
+  - Fan-out `embed` per chunk with semaphore-limited concurrency
+  - Root task status updates on success/failure
+
 #### **Redaction Service Container** (`redaction-service`)
 - **Purpose**: Remove or mask PII in documents prior to chunking.
 - **Technology**: FastAPI (Python)
@@ -317,6 +342,7 @@ QuickResolve uses a microservices architecture with 8 main containers, each serv
   - UUID v4 `chunk_id`, provenance, hashing
   - Canonical payload storage in S3 (`payload/{workspace_id}/{chunk_id}.json`)
   - Forwards to embedding service `/embed-chunk`
+
 
 ### 🗄️ Infrastructure Services
 
@@ -379,8 +405,21 @@ QuickResolve uses a microservices architecture with 8 main containers, each serv
 - `GET /users/?username={username}` - Get user by username
 - `POST /workspaces/` - Create a new workspace
 - `GET /workspaces/?name={name}&owner_id={id}` - Get workspace by name and owner
-- `POST /uploadfile/?workspace_id={id}` - Upload a file
+- `POST /uploadfile?workspace_id={id}` - Upload a file
 - `GET /file-content/?s3_key={key}` - Get file content from S3
+
+### Task Service (Port 8010)
+
+- `POST /task` - Create a new task
+- `GET /task/{task_id}` - Get full task details
+- `GET /task/{task_id}/status` - Get task status snapshot
+- `PUT /task/{task_id}` - Update task status/output
+
+### Index Document Service (Port 8011)
+
+- `GET /health` - Service health check
+- `POST /` - Run an indexing pipeline definition
+  - Body: `{ description?, s3_key, file_id, workspace_id, original_filename, steps: [{ name }], task_id? }`
 
 ### Redaction Service (Port 8007)
 
@@ -448,6 +487,15 @@ quickresolve/
 │   ├── database.py          # Database models and connection
 │   ├── requirements.txt     # Python dependencies
 │   └── Dockerfile           # Service container
+├── task-service/             # Task queue/dispatcher and status API
+│   ├── main.py              # FastAPI application
+│   ├── registry.py          # HTTP worker routes
+│   ├── requirements.txt     # Python dependencies
+│   └── Dockerfile           # Service container
+├── index-document-service/   # Indexing pipeline orchestrator
+│   ├── main.py              # FastAPI application
+│   ├── requirements.txt     # Python dependencies
+│   └── Dockerfile           # Service container
 ├── redaction-service/        # PII redaction proxy (pass-through today)
 │   ├── main.py              # FastAPI application
 │   ├── requirements.txt     # Python dependencies
@@ -490,6 +538,82 @@ quickresolve/
 ├── CHANGELOG.md            # Project changelog
 └── README.md               # This file
 ```
+
+
+## Indexer and Task Orchestration
+
+### Overview
+The indexing pipeline is orchestrated via `task-service` and driven by the `index-document-service`. A file upload to `ingestion-service` creates an `index-document` task with a definition that lists the steps to run. Each step is executed sequentially and the output of each becomes the input of the next. If a step named `embed` is present, the indexer fans out one `embed` task per chunk in parallel with a controlled concurrency limit.
+
+### End-to-end flow
+- **Ingestion** (`ingestion-service`):
+  - `POST /uploadfile?workspace_id={id}` buffers the upload to a temp file, schedules an S3 upload in the background, and immediately creates an `index-document` task in `task-service`.
+  - Responds `202 Accepted` with a `Location` header pointing to the task status URL (no response body).
+- **Task creation** (`task-service`):
+  - Receives `index-document` creation request and enqueues it.
+  - The dispatcher delivers the task to `index-document-service` (HTTP worker per registry entry).
+- **Index orchestration** (`index-document-service`):
+  - Loads the pipeline steps from the task input and runs each step.
+  - For `embed`, spawns one task per chunk and waits until all finish (or any fails).
+  - Updates the `index-document` root task status (2=completed, 3=failed) with a status message.
+
+### Index definition (example)
+```json
+{
+  "description": "Indexing document <file-uuid>",
+  "s3_key": "<workspace-id>/<file-uuid>.<ext>",
+  "file_id": "<file-uuid>",
+  "workspace_id": 1,
+  "original_filename": "document.pdf",
+  "steps": [
+    { "name": "parse-document" },
+    { "name": "redact" },
+    { "name": "chunk" },
+    { "name": "embed" }
+  ]
+}
+```
+Note: For Markdown uploads, `ingestion-service` omits the `parse-document` step.
+
+### Step inputs and outputs
+- **parse-document** (`document-parsing-service`):
+  - Input: `{ s3_key, file_id, workspace_id, original_filename }`
+  - Output: `{ parsed_s3_key, document_parser_version, images: [...] }`
+- **redact** (`redaction-service`):
+  - Input: `{ s3_key: parsed_s3_key, file_id, workspace_id, original_filename, document_parser_version }`
+  - Output: `{ redacted_s3_key, file_id, workspace_id }`
+- **chunk** (`chunking-service`):
+  - Input: `{ s3_key: redacted_s3_key | parsed_s3_key, file_id, workspace_id, original_filename, document_parser_version }`
+  - Output: `{ chunks: [ { chunk_id, ...payloadFields } ] }`
+- **embed** (`embedding-service`):
+  - Fan-out: one task per chunk
+  - Input per task: `{ chunk_id, workspace_id }`
+  - Side effect: Stores/upserts embedding + payload in Qdrant
+
+### Fan-out concurrency
+`index-document-service` runs `embed` tasks concurrently with a semaphore-limited pool (default 8). This prevents overloading downstream services and databases while still achieving parallelism.
+
+### Task registry (routing)
+`task-service/registry.py` maps task names to HTTP endpoints:
+- `index-document` → `index-document-service /`
+- `parse-document` → `document-parsing-service /parse`
+- `redact` → `redaction-service /redact`
+- `chunk` → `chunking-service /chunk`
+- `embed` → `embedding-service /embed-chunk`
+
+### Polling and status
+- Each worker step is created via `task-service` and polled by the orchestrator until it reaches `status_code` 2 (success) or 3 (failure).
+- The orchestrator retries a failed step up to 3 times (with backoff). If still failing, it marks the root `index-document` task as failed.
+- After `embed` fan-out:
+  - If all chunk embeddings succeed, the root task is set to 2 with message "embedding completed".
+  - If any chunk embedding fails, the root task is set to 3 with message "embedding failed".
+
+### Client integration
+- Upload a file via `ingestion-service` and read the `Location` header from the 202 response:
+  - Example: `Location: http://localhost:8010/task/<task-id>/status`
+- Poll the task status URL from the browser (CORS enabled on `task-service`).
+- When the root `index-document` task reaches `status_code=2`, the document is fully indexed and searchable.
+
 
 ## 🔧 Development
 

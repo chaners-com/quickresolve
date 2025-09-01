@@ -20,17 +20,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-CHUNKING_SERVICE_URL = os.getenv(
-    "CHUNKING_SERVICE_URL", "http://chunking-service:8006"
-)
+TASK_SERVICE_URL = os.getenv("TASK_SERVICE_URL", "http://task-service:8010")
 
 
-class ChunkRequest(BaseModel):
+class RedactRequest(BaseModel):
     s3_key: str
     file_id: str
     workspace_id: int
     original_filename: Optional[str] = None
     document_parser_version: Optional[str] = None
+    task_id: Optional[str] = None
 
 
 @app.get("/health")
@@ -38,19 +37,33 @@ async def health():
     return {"status": "healthy", "service": "redaction"}
 
 
-@app.post("/redact")
-async def redact(req: ChunkRequest):
+async def _update_task_status(task_id: Optional[str], **kwargs):
+    if not task_id:
+        return
     try:
-        # Fire-and-forget style:
-        # do not let downstream delay block the 200 response
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            # Kick off chunking;
-            # don't await success semantics beyond request send
-            await client.post(
-                f"{CHUNKING_SERVICE_URL}/chunk", json=req.model_dump()
-            )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.put(f"{TASK_SERVICE_URL}/task/{task_id}", json=kwargs)
     except Exception:
-        # Even if downstream call fails to connect instantly,
-        # we return accepted
         pass
+
+
+@app.post("/redact")
+async def redact(req: RedactRequest):
+    # Simulate redaction as a no-op and update own task when done
+    await _update_task_status(
+        req.task_id, status_code=1, status={"message": "Running redaction"}
+    )
+
+    # No-op: return same key; a real service would write
+    # a redacted artifact and return its key
+    await _update_task_status(
+        req.task_id,
+        status_code=2,
+        status={"message": "Redaction completed"},
+        output={
+            "redacted_s3_key": req.s3_key,
+            "file_id": req.file_id,
+            "workspace_id": req.workspace_id,
+        },
+    )
     return {"accepted": True}

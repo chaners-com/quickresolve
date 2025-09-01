@@ -38,12 +38,7 @@ S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
 S3_BUCKET = os.getenv("S3_BUCKET")
 PUBLIC_S3_ENDPOINT = os.getenv("PUBLIC_S3_ENDPOINT")
 
-ingestion_service_url = os.getenv(
-    "INGESTION_SERVICE_URL", "http://ingestion-service:8000"
-)
-redaction_service_url = os.getenv(
-    "REDACTION_SERVICE_URL", "http://redaction-service:8007"
-)
+TASK_SERVICE_URL = os.getenv("TASK_SERVICE_URL", "http://task-service:8010")
 
 s3_client = None
 
@@ -64,6 +59,7 @@ class ParseRequest(BaseModel):
     file_id: str
     workspace_id: int
     original_filename: str
+    task_id: str | None = None
 
 
 class ParseAck(BaseModel):
@@ -72,16 +68,14 @@ class ParseAck(BaseModel):
     file_id: str
 
 
-async def _update_file_status_async(file_id: str, status: int):
-    """Asynchronously update file status in ingestion service."""
+async def _update_task_status(task_id: str, **kwargs):
+    if not task_id:
+        return
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.put(
-                f"{ingestion_service_url}/files/{file_id}/status",
-                params={"status": status},
-            )
-    except Exception as e:
-        print(f"Warning: failed to update file status for {file_id}: {e}")
+            await client.put(f"{TASK_SERVICE_URL}/task/{task_id}", json=kwargs)
+    except Exception:
+        pass
 
 
 async def _download_from_s3(key: str) -> tuple[bytes, str]:
@@ -104,29 +98,12 @@ async def _upload_to_s3(
     await asyncio.to_thread(_put)
 
 
-async def _notify_chunking_service(
-    parsed_s3_key: str,
-    file_id: str,
-    workspace_id: int,
-    original_filename: str,
-    document_parser_version: str,
-) -> None:
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            await client.post(
-                f"{redaction_service_url}/redact",
-                json={
-                    "s3_key": parsed_s3_key,
-                    "file_id": str(file_id),
-                    "workspace_id": workspace_id,
-                    "original_filename": original_filename,
-                    "document_parser_version": document_parser_version,
-                },
-            )
-    except Exception as e:
-        # mark failure so UI is notified; background task should not raise
-        await _update_file_status_async(file_id, 3)
-        print(f"Failed to notify redaction-service for file {file_id}: {e}")
+async def _notify_running(task_id: str | None, step: int, message: str):
+    await _update_task_status(
+        task_id,
+        status_code=1,
+        status={"message": message, "step": step},
+    )
 
 
 async def _run_parse_job(request: ParseRequest) -> None:
@@ -151,7 +128,11 @@ async def _run_parse_job(request: ParseRequest) -> None:
             ext, s3_content_type
         ) or PARSER_REGISTRY.get(ext)
         if not parser_cls:
-            await _update_file_status_async(request.file_id, 3)
+            await _update_task_status(
+                request.task_id,
+                status_code=3,
+                status={"message": "unsupported file type"},
+            )
             print(f"Unsupported file type: .{ext}")
             return
 
@@ -174,7 +155,11 @@ async def _run_parse_job(request: ParseRequest) -> None:
         if not parsed_md or len(parsed_md.strip()) < int(
             os.getenv("MIN_OUTPUT_CHARS", "20")
         ):
-            await _update_file_status_async(request.file_id, 3)
+            await _update_task_status(
+                request.task_id,
+                status_code=3,
+                status={"message": "validation failed"},
+            )
             print(
                 f"""Validation failed for file {request.file_id}:
                  insufficient output"""
@@ -199,13 +184,25 @@ async def _run_parse_job(request: ParseRequest) -> None:
             parsed_s3_key, parsed_bytes, content_type="text/markdown"
         )
 
-        # Notify chunking-service
-        await _notify_chunking_service(
-            parsed_s3_key=parsed_s3_key,
-            file_id=request.file_id,
-            workspace_id=request.workspace_id,
-            original_filename=request.original_filename,
-            document_parser_version=document_parser_version,
+        # Update task output; orchestrator will decide next step
+        await _update_task_status(
+            request.task_id,
+            status_code=2,
+            output={
+                "parsed_s3_key": parsed_s3_key,
+                "document_parser_version": document_parser_version,
+                "images": [
+                    {
+                        "key": (
+                            f"{request.workspace_id}/parsed/"
+                            f"{request.file_id}/images/"
+                            f"image-{(img.get('index') or 0)}."
+                            f"{(img.get('ext') or 'png').lstrip('.')}"
+                        )
+                    }
+                    for img in (images or [])
+                ],
+            },
         )
 
         duration = time.time() - started
@@ -214,7 +211,11 @@ async def _run_parse_job(request: ParseRequest) -> None:
              for file {request.file_id} in {duration:.3f}s"""
         )
     except Exception as e:
-        await _update_file_status_async(request.file_id, 3)
+        await _update_task_status(
+            request.task_id,
+            status_code=3,
+            status={"message": f"Parse failed: {e}"},
+        )
         print(f"Parse job failed for file {request.file_id}: {e}")
 
 
@@ -241,7 +242,7 @@ async def get_supported_types():
     }
 
 
-@app.post("/parse/")
+@app.post("/parse")
 async def parse_document(request: ParseRequest):
     # Enqueue background parse job and return immediate ack
     asyncio.create_task(_run_parse_job(request))

@@ -6,10 +6,15 @@ from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 from pydantic import BaseModel, EmailStr
-from shared.database import User, get_db  # Import from shared database module
+from backend.db.database import User, get_db 
 
 # Configuration
-JWT_SECRET = os.getenv("JWT_SECRET", "your-super-secret-jwt-key-change-this-in-production")
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise ValueError("JWT_SECRET environment variable is required and not set")
+if len(JWT_SECRET) < 64:
+    raise ValueError("JWT_SECRET must be at least 64 characters long for security")
+
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = int(os.getenv("JWT_EXPIRATION_HOURS", 168))  # 7 days default
 

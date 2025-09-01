@@ -39,6 +39,25 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   minio:
     image: minio/minio:latest
@@ -53,28 +72,25 @@ services:
     command: server /data --console-address ":9001"
     restart: unless-stopped
 
-  frontend:
-    build: ./frontend
-    ports:
-      - "8080:80"
-    restart: unless-stopped
-
   auth-service:
     build: ./backend/auth-service
     ports:
       - "8003:8000"
     volumes:
-      - ./shared:/app/shared
+      - ./backend:/app/backend
     environment:
       DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
       JWT_SECRET: "${JWT_SECRET}"
       JWT_ALGORITHM: "HS256"
       JWT_EXPIRATION_HOURS: "168"  # 7 days
-      CORS_ORIGINS: "http://localhost:8090,http://localhost:3000"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS}"
       LOG_LEVEL: "INFO"
-      FORCE_SCHEMA_UPDATE: "true" 
+      FORCE_SCHEMA_UPDATE: "false" 
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -85,12 +101,25 @@ services:
   landing-next:
     build: ./landing-next
     ports:
-      - "8090:3000"
+      - "3000:3000"  # Changed from 8090 to 3000 for consistency
     environment:
-    - NODE_ENV=production
-    - BACKEND_URL=http://auth-service:8000  # Internal Docker network
+      - NODE_ENV=production
+      - AUTH_SERVICE_URL=http://auth-service:8000
+      - INGESTION_SERVICE_URL=http://ingestion-service:8000
+      - AI_AGENT_SERVICE_URL=http://ai-agent-service:8002
+      - EMBEDDING_SERVICE_URL=http://embedding-service:8001
+      - DOCUMENT_PARSING_SERVICE_URL=http://document-parsing-service:8005
+      - CHUNKING_SERVICE_URL=http://chunking-service:8006
+      - JWT_SECRET=${JWT_SECRET}
+      - NEXTAUTH_URL=http://localhost:3000
+      - NEXTAUTH_SECRET=${JWT_SECRET}
+      - REDIS_URL=redis://redis:6379
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
     depends_on:
-    - auth-service
+      - auth-service
+      - ingestion-service  
+      - ai-agent-service
+      - redis
     restart: unless-stopped
 
   ingestion-service:
@@ -98,15 +127,24 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./shared:/app/shared  
+      - ./backend:/app/backend  
     environment:
       DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
       S3_ENDPOINT: "http://minio:9000"
       S3_ACCESS_KEY: "${MINIO_ROOT_USER}"
       S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD}"
       S3_BUCKET: "${S3_BUCKET}"
+    # depends_on:
+    #   db:
+    #     condition: service_healthy
+    #   auth-service:
+    #     condition: service_healthy
     restart: unless-stopped
-
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
   embedding-service:
     build: ./embedding-service
     ports:
@@ -148,8 +186,10 @@ services:
       DOCX_PARSER_VERSION: "${DOCX_PARSER_VERSION:-fast-docx-parser-1}"
       REDACTION_SERVICE_URL: "http://redaction-service:8007"
     depends_on:
-      - db
-      - minio
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_started
     restart: unless-stopped
 
   chunking-service:
@@ -188,4 +228,5 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
   qdrant_storage: 

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import datetime, timezone
 from uuid import UUID
-from shared.database import get_db, create_tables 
+from backend.db.database import get_db,create_tables
 from auth_service import (
     AuthService,
     UserLogin,
@@ -23,7 +23,7 @@ users_router = APIRouter(prefix="/users", tags=["users"])
 files_router = APIRouter(prefix="/files", tags=["files"])
 
 # Optionally initialize DB tables (prefer migrations in production) TODO: check this after
-create_tables()
+create_tables
 
 # ---------------------------------------
 # Helpers / Dependencies
@@ -59,7 +59,6 @@ from pydantic import BaseModel, Field
 class UserUpdateRequest(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
-    username: Optional[str] = None
     email: Optional[str] = None
     company_name: Optional[str] = None
     team_size: Optional[str] = None

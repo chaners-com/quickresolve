@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from auth_endpoints import auth_router
-from shared.database import Base, engine
+from auth_endpoints import auth_router, users_router, files_router
+import sys
+sys.path.insert(0, '/app/backend')
+from backend.db.database import init_database
 import os
 
 # Create FastAPI app
@@ -11,49 +13,34 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware
+# CORS Configuration
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001").split(",")
+
+# Add CORS middleware with secure configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # Next.js development
-        "http://localhost:3001",  # Alternative Next.js port
-        "http://localhost:8090",  # Landing page
-        "https://your-frontend-domain.com",  # Production frontend TODO: update this
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # Specific methods only
+    allow_headers=[
+        "Authorization",
+        "Content-Type", 
+        "X-CSRF-Token",
+        "X-Requested-With",
+        "Accept"
+    ],  # Specific headers only
+    expose_headers=["X-CSRF-Token"],  # Headers that frontend can access
 )
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database tables on startup"""
-    if engine:
-        print("=== FORCING DATABASE SCHEMA UPDATE ===")
-        
-        # Force drop and recreate all tables (DEVELOPMENT ONLY!) TODO: To find an other solution
-        # This will delete all existing data
-        if os.getenv("FORCE_SCHEMA_UPDATE", "false").lower() == "true":
-            print("Dropping all existing tables...")
-            Base.metadata.drop_all(bind=engine)
-            print("Creating tables with new schema...")
-        
-        # Create all tables with the correct schema
-        Base.metadata.create_all(bind=engine)
-        print("Database tables created/updated successfully")
-        
-        # Verify the schema
-        from sqlalchemy import inspect
-        inspector = inspect(engine)
-        tables = inspector.get_table_names()
-        print(f"Available tables: {tables}")
-        
-        if 'users' in tables:
-            columns = [col['name'] for col in inspector.get_columns('users')]
-            print(f"Users table columns: {columns}")
+    """Initialize database - this is the single source of truth for database creation"""
+    init_database()
 
-# Include authentication routes
+# Include all routes
 app.include_router(auth_router)
+app.include_router(users_router)
+app.include_router(files_router)
 
 # Root endpoint
 @app.get("/")

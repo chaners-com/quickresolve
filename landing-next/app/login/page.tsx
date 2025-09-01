@@ -33,13 +33,10 @@ export default function LoginPage() {
       const data = await response.json()
 
       if (response.ok) {
-        // TODO: to change after
-        // Store token and redirect to dashboard
-        // Note: In production, avoid localStorage for sensitive tokens
-        // Consider using httpOnly cookies instead
-        localStorage.setItem('authToken', data.token)
-        localStorage.setItem('user', JSON.stringify(data.user))
-        router.push('/dashboard')
+        // Success! The server has set secure HTTP-only cookies
+        const urlParams = new URLSearchParams(window.location.search)
+        const redirect = urlParams.get('redirect') || '/dashboard'
+        window.location.href = redirect
       } else {
         setError(data.error || 'Login failed')
       }

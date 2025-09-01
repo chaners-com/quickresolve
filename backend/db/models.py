@@ -1,3 +1,7 @@
+"""
+Database models only - no dependencies on auth-specific packages.
+This file can be safely imported by other services.
+"""
 import os
 from datetime import datetime
 from sqlalchemy import (
@@ -18,24 +22,21 @@ from uuid import uuid4
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
 
-# Only create engine if DATABASE_URL is provided
-if DATABASE_URL:
-    engine = create_engine(
-        DATABASE_URL,
-        pool_pre_ping=True,
-        pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
-        max_overflow=int(os.getenv("DB_POOL_MAX_OVERFLOW", "20")),
-        pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "60")),
-        pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),
-        future=True,
-    )
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-else:
-    engine = None
-    SessionLocal = None
+# Create database engine and session factory
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
+    max_overflow=int(os.getenv("DB_POOL_MAX_OVERFLOW", "20")),
+    pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "60")),
+    pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),
+    future=True,
+)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
+# Database Models
 class User(Base):
     __tablename__ = "users"
     
@@ -82,16 +83,8 @@ class File(Base):
 
 # Database dependency
 def get_db():
-    if SessionLocal is None:
-        raise Exception("Database not configured")
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
-
-# Create tables
-def create_tables():
-    print("create tanle ,", engine)
-    if engine:
-        Base.metadata.create_all(bind=engine)

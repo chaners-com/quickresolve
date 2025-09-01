@@ -5,35 +5,17 @@ import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import Link from 'next/link'
 import { 
-  UserCircle, 
   FileText, 
-  Settings, 
-  LogOut, 
   Upload, 
-  Search,
-  Bell,
-  Home,
-  Folder,
-  BarChart3,
-  Plus,
-  Filter,
-  Grid,
-  List,
   MessageSquare,
-  User as UserIcon
+  BarChart3,
+  Folder,
+  CheckCircle, 
+  Clock,
+  AlertCircle
 } from 'lucide-react'
 import { GlassCard } from '../components/GlassCard'
-import { GradientOrbs } from '../components/GradientOrbs'
-
-interface User {
-  id: number
-  email: string
-  username?: string
-  first_name?: string
-  last_name?: string
-  is_active: boolean
-  created_at: string
-}
+import { useAuth } from '../components/SecureAuthGuard'
 
 interface Workspace {
   id: number
@@ -60,8 +42,7 @@ interface DashboardStats {
 }
 
 export default function DashboardPage() {
-  const [user, setUser] = useState<User | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  const { user, isLoading } = useAuth() // Use the auth context from SecureAuthGuard
   const [stats, setStats] = useState<DashboardStats>({
     total_files: 0,
     processed_files: 0,
@@ -71,69 +52,47 @@ export default function DashboardPage() {
   })
   const [recentFiles, setRecentFiles] = useState<FileItem[]>([])
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
-  const [searchQuery, setSearchQuery] = useState('')
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
-  const [selectedFilter, setSelectedFilter] = useState('all')
-  const [currentPage, setCurrentPage] = useState('dashboard')
+  const [selectedFile, setSelectedFile] = useState<FileItem | null>(null)
+  const [showFileViewer, setShowFileViewer] = useState(false)
   const router = useRouter()
 
   useEffect(() => {
-    checkAuth()
-  }, [])
-
-  const checkAuth = async () => {
-    try {
-      const token = localStorage.getItem('authToken')
-      const userData = localStorage.getItem('user')
-
-      if (!token || !userData) {
-        router.push('/login')
-        return
-      }
-
-      // Verify token with backend
-      const response = await fetch('/api/auth/me', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (response.ok) {
-        const user = await response.json()
-        setUser(user)
-        await loadDashboardData(user.id)
-      } else {
-        // Token is invalid, redirect to login
-        localStorage.removeItem('authToken')
-        localStorage.removeItem('user')
-        router.push('/login')
-      }
-    } catch (error) {
-      console.error('Auth check failed:', error)
-      router.push('/login')
-    } finally {
-      setIsLoading(false)
+    if (user) {
+      loadDashboardData(user.id)
     }
-  }
+  }, [user])
 
-  const loadDashboardData = async (userId: number) => {
+  const loadDashboardData = async (authUserId: number) => {
     try {
+      // First, get the ingestion service user ID from the username
+      const username = user?.username || `${user?.first_name}_${user?.last_name}`.toLowerCase()
+      
+      const ingestionUserResponse = await fetch(`/api/users?username=${encodeURIComponent(username)}`)
+      let ingestionUserId = authUserId // fallback to auth user ID
+      
+      if (ingestionUserResponse.ok) {
+        const users = await ingestionUserResponse.json()
+        if (users && users.length > 0) {
+          ingestionUserId = users[0].id
+        }
+      }
+
       // Load user stats
-      const statsResponse = await fetch(`/api/dashboard/stats?user_id=${userId}`)
+      const statsResponse = await fetch(`/api/dashboard/stats?user_id=${ingestionUserId}`)
       if (statsResponse.ok) {
         const statsData = await statsResponse.json()
         setStats(statsData)
       }
 
       // Load recent files
-      const filesResponse = await fetch(`/api/files?user_id=${userId}&limit=6`)
+      const filesResponse = await fetch(`/api/files?user_id=${ingestionUserId}&limit=6`)
       if (filesResponse.ok) {
         const filesData = await filesResponse.json()
         setRecentFiles(filesData)
       }
 
       // Load workspaces
-      const workspacesResponse = await fetch(`/api/workspaces?owner_id=${userId}`)
+      const workspacesResponse = await fetch(`/api/workspaces?owner_id=${ingestionUserId}`)
       if (workspacesResponse.ok) {
         const workspacesData = await workspacesResponse.json()
         setWorkspaces(workspacesData)
@@ -143,295 +102,151 @@ export default function DashboardPage() {
     }
   }
 
-  const handleLogout = () => {
-    localStorage.removeItem('authToken')
-    localStorage.removeItem('user')
-    router.push('/login')
-  }
-
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files
-    if (!files || files.length === 0) return
-
-    // For now, redirect to file management page
-    router.push('/dashboard/files')
+  const handleViewFile = (file: FileItem) => {
+    setSelectedFile(file)
+    setShowFileViewer(true)
   }
 
   if (isLoading) {
     return (
-      <div className="relative min-h-screen bg-gray-900">
-        <GradientOrbs />
-        <div className="flex items-center justify-center min-h-screen">
-          <div className="flex items-center space-x-2 text-white">
-            <div className="w-8 h-8 border-2 border-white/30 border-t-emerald-500 rounded-full animate-spin"></div>
-            <span>Loading...</span>
-          </div>
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="flex items-center space-x-2 text-white">
+          <div className="w-8 h-8 border-2 border-white/30 border-t-emerald-500 rounded-full animate-spin"></div>
+          <span>Loading...</span>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="relative min-h-screen bg-gray-900">
-      <GradientOrbs />
-      
-      {/* Sidebar */}
-      <div className="fixed inset-y-0 left-0 w-64 glass-premium border-r border-white/10 z-50">
-        <div className="flex flex-col h-full">
-          {/* Logo */}
-          <div className="flex items-center px-6 py-4">
-            <Link href="/" className="text-2xl font-bold gradient-text">
-              QuickResolve
-            </Link>
-          </div>
+    <div className="p-6 min-h-full bg-gray-900">
+      {/* Page Title */}
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold text-white mb-2">Dashboard</h1>
+        <p className="text-white/60">Welcome back, {user?.first_name}!</p>
+      </div>
 
-          {/* Navigation */}
-          <nav className="flex-1 px-4 space-y-2">
-            <NavItem 
-              icon={<Home size={20} />} 
-              label="Dashboard" 
-              active={currentPage === 'dashboard'}
-              onClick={() => setCurrentPage('dashboard')}
-            />
-            <NavItem 
-              icon={<Folder size={20} />} 
-              label="Files" 
-              onClick={() => router.push('/dashboard/files')}
-            />
-            <NavItem 
-              icon={<MessageSquare size={20} />} 
-              label="AI Chat" 
-              onClick={() => router.push('/dashboard/chat')}
-            />
-            <NavItem 
-              icon={<BarChart3 size={20} />} 
-              label="Analytics" 
-              onClick={() => router.push('/dashboard/analytics')}
-            />
-            <NavItem 
-              icon={<UserIcon size={20} />} 
-              label="Profile" 
-              onClick={() => router.push('/dashboard/profile')}
-            />
-            <NavItem 
-              icon={<Settings size={20} />} 
-              label="Settings" 
-              onClick={() => router.push('/dashboard/settings')}
-            />
-          </nav>
+      {/* Quick Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <StatsCard
+          title="Total Files"
+          value={stats.total_files.toString()}
+          change={stats.total_files > 0 ? "+12%" : "0%"}
+          positive={stats.total_files > 0}
+          icon={<FileText size={24} />}
+        />
+        <StatsCard
+          title="Processed Files"
+          value={stats.processed_files.toString()}
+          change={stats.processed_files > 0 ? "+5%" : "0%"}
+          positive={stats.processed_files > 0}
+          icon={<CheckCircle size={24} />}
+        />
+        <StatsCard
+          title="Processing"
+          value={stats.processing_files.toString()}
+          change="0%"
+          positive={null}
+          icon={<Clock size={24} />}
+        />
+        <StatsCard
+          title="Workspaces"
+          value={stats.total_workspaces.toString()}
+          change={stats.total_workspaces > 0 ? "+8%" : "0%"}
+          positive={stats.total_workspaces > 0}
+          icon={<Folder size={24} />}
+        />
+      </div>
 
-          {/* User Profile */}
-          <div className="p-4 border-t border-white/10">
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full flex items-center justify-center">
-                <span className="text-white font-semibold text-sm">
-                  {user?.first_name?.[0]}{user?.last_name?.[0]}
-                </span>
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-white text-sm font-medium truncate">
-                  {user?.first_name} {user?.last_name}
-                </p>
-                <p className="text-white/60 text-xs truncate">
-                  {user?.email}
-                </p>
-              </div>
-              <button
-                onClick={handleLogout}
-                className="text-white/60 hover:text-white transition-colors"
-                title="Logout"
-              >
-                <LogOut size={18} />
-              </button>
-            </div>
-          </div>
+      {/* Quick Actions */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+        <QuickActionCard
+          title="Upload Documents"
+          description="Add new files to your workspace"
+          icon={<Upload size={32} />}
+          onClick={() => router.push('/dashboard/files')}
+          gradient="from-blue-500 to-cyan-500"
+        />
+        <QuickActionCard
+          title="Chat with AI"
+          description="Ask questions about your documents"
+          icon={<MessageSquare size={32} />}
+          onClick={() => router.push('/dashboard/chat')}
+          gradient="from-emerald-500 to-teal-500"
+        />
+        <QuickActionCard
+          title="View Analytics"
+          description="Monitor your usage and insights"
+          icon={<BarChart3 size={32} />}
+          onClick={() => router.push('/dashboard/analytics')}
+          gradient="from-purple-500 to-pink-500"
+        />
+      </div>
+
+      {/* Recent Files */}
+      <GlassCard className="p-6">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-xl font-semibold text-white">Recent Files</h2>
+          <Link 
+            href="/dashboard/files"
+            className="text-emerald-400 hover:text-emerald-300 text-sm font-medium"
+          >
+            View All
+          </Link>
         </div>
-      </div>
 
-      {/* Main Content */}
-      <div className="ml-64">
-        {/* Header */}
-        <header className="bg-white/5 border-b border-white/10 px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-bold text-white">
-                Welcome back, {user?.first_name}!
-              </h1>
-              <p className="text-white/60 mt-1">
-                Manage your files and interact with your documents
-              </p>
-            </div>
-            <div className="flex items-center space-x-4">
-              <button className="relative text-white/60 hover:text-white transition-colors">
-                <Bell size={20} />
-                <span className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full"></span>
-              </button>
-              
-              {/* File Upload */}
-              <div className="relative">
-                <input
-                  type="file"
-                  id="headerFileUpload"
-                  multiple
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
-                <motion.label
-                  htmlFor="headerFileUpload"
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  className="bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-4 py-2 rounded-lg font-medium flex items-center space-x-2 shadow-lg cursor-pointer"
-                >
-                  <Upload size={18} />
-                  <span>Upload Files</span>
-                </motion.label>
-              </div>
-            </div>
+        {recentFiles.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {recentFiles.map((file) => (
+              <FileCard key={file.id} file={file} onViewFile={handleViewFile} />
+            ))}
           </div>
-        </header>
-
-        {/* Dashboard Content */}
-        <main className="p-6">
-          {/* Quick Stats */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-            <StatsCard
-              title="Total Files"
-              value={stats.total_files.toString()}
-              change={stats.total_files > 0 ? "+12%" : "0%"}
-              positive={stats.total_files > 0}
-              icon={<FileText size={24} />}
-            />
-            <StatsCard
-              title="Processed Files"
-              value={stats.processed_files.toString()}
-              change={stats.processed_files > 0 ? "+5%" : "0%"}
-              positive={stats.processed_files > 0}
-              icon={<CheckCircle size={24} />}
-            />
-            <StatsCard
-              title="Processing"
-              value={stats.processing_files.toString()}
-              change="0%"
-              positive={null}
-              icon={<Clock size={24} />}
-            />
-            <StatsCard
-              title="Workspaces"
-              value={stats.total_workspaces.toString()}
-              change={stats.total_workspaces > 0 ? "+8%" : "0%"}
-              positive={stats.total_workspaces > 0}
-              icon={<Folder size={24} />}
-            />
-          </div>
-
-          {/* Quick Actions */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-            <QuickActionCard
-              title="Upload Documents"
-              description="Add new files to your workspace"
-              icon={<Upload size={32} />}
+        ) : (
+          <div className="text-center py-12">
+            <FileText className="mx-auto text-white/40 mb-4" size={48} />
+            <p className="text-white/60 text-lg">No files uploaded yet</p>
+            <p className="text-white/40 text-sm mt-2">
+              Upload your first document to get started
+            </p>
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
               onClick={() => router.push('/dashboard/files')}
-              gradient="from-blue-500 to-cyan-500"
-            />
-            <QuickActionCard
-              title="Chat with AI"
-              description="Ask questions about your documents"
-              icon={<MessageSquare size={32} />}
-              onClick={() => router.push('/dashboard/chat')}
-              gradient="from-emerald-500 to-teal-500"
-            />
-            <QuickActionCard
-              title="View Analytics"
-              description="Monitor your usage and insights"
-              icon={<BarChart3 size={32} />}
-              onClick={() => router.push('/dashboard/analytics')}
-              gradient="from-purple-500 to-pink-500"
-            />
+              className="mt-4 bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-6 py-3 rounded-lg font-medium"
+            >
+              Upload Files
+            </motion.button>
+          </div>
+        )}
+      </GlassCard>
+
+      {/* Workspaces Overview */}
+      {workspaces.length > 0 && (
+        <GlassCard className="p-6 mt-6">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-xl font-semibold text-white">Your Workspaces</h2>
+            <span className="text-white/60 text-sm">{workspaces.length} workspace{workspaces.length > 1 ? 's' : ''}</span>
           </div>
 
-          {/* Recent Files */}
-          <GlassCard className="p-6">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-semibold text-white">Recent Files</h2>
-              <Link 
-                href="/dashboard/files"
-                className="text-emerald-400 hover:text-emerald-300 text-sm font-medium"
-              >
-                View All
-              </Link>
-            </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {workspaces.map((workspace) => (
+              <WorkspaceCard key={workspace.id} workspace={workspace} />
+            ))}
+          </div>
+        </GlassCard>
+      )}
 
-            {recentFiles.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {recentFiles.map((file) => (
-                  <FileCard key={file.id} file={file} />
-                ))}
-              </div>
-            ) : (
-              <div className="text-center py-12">
-                <FileText className="mx-auto text-white/40 mb-4" size={48} />
-                <p className="text-white/60 text-lg">No files uploaded yet</p>
-                <p className="text-white/40 text-sm mt-2">
-                  Upload your first document to get started
-                </p>
-                <motion.button
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={() => router.push('/dashboard/files')}
-                  className="mt-4 bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-6 py-3 rounded-lg font-medium"
-                >
-                  Upload Files
-                </motion.button>
-              </div>
-            )}
-          </GlassCard>
-
-          {/* Workspaces Overview */}
-          {workspaces.length > 0 && (
-            <GlassCard className="p-6 mt-6">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-semibold text-white">Your Workspaces</h2>
-                <span className="text-white/60 text-sm">{workspaces.length} workspace{workspaces.length > 1 ? 's' : ''}</span>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {workspaces.map((workspace) => (
-                  <WorkspaceCard key={workspace.id} workspace={workspace} />
-                ))}
-              </div>
-            </GlassCard>
-          )}
-        </main>
-      </div>
+      {/* File Viewer Modal */}
+      {showFileViewer && selectedFile && (
+        <FileViewer 
+          file={selectedFile} 
+          onClose={() => {
+            setShowFileViewer(false)
+            setSelectedFile(null)
+          }}
+        />
+      )}
     </div>
-  )
-}
-
-// Navigation Item Component
-function NavItem({ 
-  icon, 
-  label, 
-  active = false, 
-  onClick 
-}: { 
-  icon: React.ReactNode, 
-  label: string, 
-  active?: boolean, 
-  onClick?: () => void 
-}) {
-  return (
-    <motion.button
-      whileHover={{ scale: 1.02 }}
-      onClick={onClick}
-      className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-all ${
-        active 
-          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
-          : 'text-white/70 hover:text-white hover:bg-white/5'
-      }`}
-    >
-      {icon}
-      <span className="font-medium">{label}</span>
-    </motion.button>
   )
 }
 
@@ -505,7 +320,7 @@ function QuickActionCard({
 }
 
 // File Card Component
-function FileCard({ file }: { file: FileItem }) {
+function FileCard({ file, onViewFile }: { file: FileItem; onViewFile: (file: FileItem) => void }) {
   const getFileIcon = (fileName: string) => {
     const extension = fileName.split('.').pop()?.toLowerCase()
     switch (extension) {
@@ -537,9 +352,15 @@ function FileCard({ file }: { file: FileItem }) {
     }
   }
 
+  const handleFileClick = () => {
+    // Open file viewer instead of navigating
+    onViewFile(file)
+  }
+
   return (
     <motion.div
       whileHover={{ scale: 1.02 }}
+      onClick={handleFileClick}
       className="glass-premium p-4 rounded-lg border border-white/10 hover:border-emerald-500/30 transition-all cursor-pointer"
     >
       <div className="flex items-center space-x-3 mb-3">
@@ -564,9 +385,17 @@ function FileCard({ file }: { file: FileItem }) {
 
 // Workspace Card Component
 function WorkspaceCard({ workspace }: { workspace: Workspace }) {
+  const router = useRouter()
+  
+  const handleWorkspaceClick = () => {
+    // Navigate to files page and highlight the workspace
+    router.push(`/dashboard/files?highlight=workspace_${workspace.id}`)
+  }
+
   return (
     <motion.div
       whileHover={{ scale: 1.02 }}
+      onClick={handleWorkspaceClick}
       className="glass-premium p-4 rounded-lg border border-white/10 hover:border-emerald-500/30 transition-all cursor-pointer"
     >
       <div className="flex items-center space-x-3 mb-3">
@@ -586,5 +415,143 @@ function WorkspaceCard({ workspace }: { workspace: Workspace }) {
   )
 }
 
-// Import additional icons
-import { CheckCircle, Clock } from 'lucide-react'
+// FileViewer component for modal display
+function FileViewer({ file, onClose }: { file: any; onClose: () => void }) {
+  const [content, setContent] = useState<string>('')
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const fetchContent = async () => {
+      if (!file.s3_key) {
+        setError('File not available (no S3 key)')
+        setIsLoading(false)
+        return
+      }
+
+      try {
+        setIsLoading(true)
+        const response = await fetch(`/api/file-content?s3_key=${encodeURIComponent(file.s3_key)}`)
+        
+        if (response.ok) {
+          const data = await response.json()
+          setContent(data.content || 'No content available')
+          setError(null)
+        } else {
+          setError('Failed to fetch file content')
+        }
+      } catch (error) {
+        console.error('Error fetching file content:', error)
+        setError('Error loading file content')
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    fetchContent()
+  }, [file.s3_key])
+
+  const getFileIcon = (fileName: string) => {
+    const extension = fileName.split('.').pop()?.toLowerCase()
+    switch (extension) {
+      case 'pdf': return '📄'
+      case 'doc':
+      case 'docx': return '📝'
+      case 'xls':
+      case 'xlsx': return '📊'
+      case 'txt': return '📄'
+      case 'md': return '📝'
+      case 'py': return '🐍'
+      case 'js':
+      case 'ts': return '⚡'
+      case 'json': return '📋'
+      default: return '📄'
+    }
+  }
+
+  const getStatusColor = (status: number) => {
+    switch (status) {
+      case 1: return 'text-yellow-400'
+      case 2: return 'text-green-400'
+      case 3: return 'text-red-400'
+      default: return 'text-white/60'
+    }
+  }
+
+  const getStatusText = (status: number) => {
+    switch (status) {
+      case 1: return 'Processing'
+      case 2: return 'Processed'
+      case 3: return 'Error'
+      default: return 'Unknown'
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        className="bg-white/10 backdrop-blur-lg rounded-xl border border-white/20 max-w-6xl w-full max-h-[90vh] overflow-hidden"
+      >
+        <div className="flex items-center justify-between p-6 border-b border-white/20">
+          <div className="flex items-center space-x-3">
+            <span className="text-2xl">{getFileIcon(file.name)}</span>
+            <div>
+              <h3 className="text-white text-xl font-bold">{file.name}</h3>
+              <div className="flex items-center space-x-4 text-sm">
+                <span className="text-white/60">
+                  {new Date(file.created_at).toLocaleDateString()} • {new Date(file.created_at).toLocaleTimeString()}
+                </span>
+                <div className={`flex items-center space-x-1 ${getStatusColor(file.status)}`}>
+                  <span>{getStatusText(file.status)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-white/60 hover:text-white p-2 hover:bg-white/10 rounded-lg transition-colors"
+            title="Close"
+          >
+            ✕
+          </button>
+        </div>
+        
+        <div className="p-6 overflow-auto max-h-[calc(90vh-120px)]">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="flex items-center space-x-2 text-white">
+                <div className="w-6 h-6 border-2 border-white/30 border-t-emerald-500 rounded-full animate-spin"></div>
+                <span>Loading file content...</span>
+              </div>
+            </div>
+          ) : error ? (
+            <div className="text-center py-12">
+              <div className="text-red-400 mb-4">
+                <AlertCircle size={48} className="mx-auto mb-2" />
+                <p className="text-lg">{error}</p>
+              </div>
+              <p className="text-white/60 text-sm">
+                The file might not be processed yet or there was an error loading the content.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-gray-900/50 rounded-lg p-4 border border-white/10">
+              <div className="flex items-center justify-between mb-4">
+                <h4 className="text-white font-medium">File Content</h4>
+                <div className="text-white/60 text-xs">
+                  {content.length} characters
+                </div>
+              </div>
+              <pre className="whitespace-pre-wrap text-white/90 text-sm leading-relaxed overflow-auto max-h-96 bg-black/20 p-4 rounded border border-white/10">
+                {content}
+              </pre>
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  )
+}

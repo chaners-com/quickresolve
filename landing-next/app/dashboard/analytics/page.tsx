@@ -128,6 +128,8 @@ export default function AnalyticsPage() {
             <div>
               <h1 className="text-3xl font-bold text-white">Analytics</h1>
               <p className="text-white/60 mt-1">Track your usage and document insights</p>
+              {/* TODO: actual data */}
+              <p className="text-white/60 mt-1">Mock data -- Soon updated with real data </p>
             </div>
           </div>
         </div>

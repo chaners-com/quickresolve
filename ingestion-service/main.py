@@ -7,7 +7,7 @@ from uuid import UUID
 
 import boto3
 import httpx
-from shared.database import (
+from backend.db.database import (
     File as DBFile,
     SessionLocal,
     User,
@@ -18,6 +18,7 @@ from fastapi import (
     Depends,
     FastAPI,
     HTTPException,
+    Query,
     Response,
     UploadFile,
 )
@@ -418,6 +419,20 @@ async def get_workspace_by_name(
     return [workspace] if workspace else []
 
 
+@app.get(
+    "/workspaces/by-owner/{owner_id}", response_model=list[WorkspaceResponse]
+)
+async def get_workspaces_by_owner(owner_id: int, db: Session = Depends(get_db)):
+    """
+    Get all workspaces for a specific owner.
+    Returns a list of workspaces belonging to the specified owner.
+    """
+    workspaces = (
+        db.query(Workspace).filter(Workspace.owner_id == owner_id).all()
+    )
+    return workspaces
+
+
 @app.get("/workspaces/all", response_model=list[WorkspaceResponse])
 async def get_all_workspaces(db: Session = Depends(get_db)):
     """
@@ -426,6 +441,66 @@ async def get_all_workspaces(db: Session = Depends(get_db)):
     """
     workspaces = db.query(Workspace).all()
     return workspaces
+
+# --- File Management Endpoints ---
+
+
+@app.get("/files/", response_model=list)
+async def get_files(
+    user_id: int = None,
+    workspace_id: int = None,
+    limit: int = Query(50, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    """
+    Get files by user_id or workspace_id.
+    Returns a list of files matching the criteria.
+    """
+    query = db.query(DBFile)
+
+    if workspace_id:
+        query = query.filter(DBFile.workspace_id == workspace_id)
+    elif user_id:
+        # Get all workspaces for this user first
+        user_workspaces = (
+            db.query(Workspace).filter(Workspace.owner_id == user_id).all()
+        )
+        workspace_ids = [w.id for w in user_workspaces]
+        if workspace_ids:
+            query = query.filter(DBFile.workspace_id.in_(workspace_ids))
+        else:
+            return []  # User has no workspaces, so no files
+
+    files = query.order_by(DBFile.created_at.desc()).limit(limit).all()
+
+    return [
+        {
+            "id": str(file.id),
+            "name": file.name,
+            "s3_key": file.s3_key,
+            "workspace_id": file.workspace_id,
+            "status": file.status,
+            "created_at": (
+                file.created_at.isoformat() if file.created_at else None
+            ),
+        }
+        for file in files
+    ]
+
+
+@app.delete("/files/{file_id}")
+async def delete_file(file_id: UUID, db: Session = Depends(get_db)):
+    """
+    Delete a file by its ID.
+    """
+    file = db.query(DBFile).filter(DBFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # TODO: Also delete from S3 (raws/chunks/vectors) and Qdrant points
+    db.delete(file)
+    db.commit()
+    return {"message": "File deleted successfully"}
 
 
 # --- File Status Endpoints ---
@@ -442,7 +517,7 @@ async def get_file_status(file_id: UUID, db: Session = Depends(get_db)):
 @app.put("/files/{file_id}/status", response_model=FileStatusResponse)
 async def update_file_status(
     file_id: UUID,
-    status: int,
+    status: int = Query(..., ge=1, le=3),
     db: Session = Depends(get_db),
 ):
     file = db.query(DBFile).filter(DBFile.id == file_id).first()

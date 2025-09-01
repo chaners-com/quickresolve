@@ -1,7 +1,7 @@
 'use client'
 
-import FileManagementPage from '../../components/FileManagementPage'
+import FileUploadPage from '../../components/FileUploadPage'
 
 export default function Files() {
-  return <FileManagementPage />
+  return <FileUploadPage />
 }

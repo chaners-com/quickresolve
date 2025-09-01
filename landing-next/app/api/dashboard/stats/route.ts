@@ -9,8 +9,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ detail: 'user_id parameter required' }, { status: 400 })
     }
 
-    // Fetch workspaces
-    const workspacesResponse = await fetch(`${process.env.INGESTION_SERVICE_URL || 'http://localhost:8000'}/workspaces/?owner_id=${userId}`)
+    const workspacesResponse = await fetch(`${process.env.INGESTION_SERVICE_URL || 'http://localhost:8000'}/workspaces/by-owner/${userId}`)
     const workspaces = workspacesResponse.ok ? await workspacesResponse.json() : []
 
     // Fetch files stats

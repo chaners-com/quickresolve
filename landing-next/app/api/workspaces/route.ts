@@ -9,7 +9,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ detail: 'owner_id parameter required' }, { status: 400 })
     }
 
-    const response = await fetch(`${process.env.INGESTION_SERVICE_URL || 'http://localhost:8000'}/workspaces/?owner_id=${ownerId}`)
+    const response = await fetch(`${process.env.INGESTION_SERVICE_URL || 'http://localhost:8000'}/workspaces/by-owner/${ownerId}`)
     
     if (!response.ok) {
       return NextResponse.json({ detail: 'Failed to fetch workspaces' }, { status: response.status })

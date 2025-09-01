@@ -101,11 +101,8 @@ export default function SignupPage() {
       const data = await response.json()
 
       if (response.ok) {
-        // Store token and redirect to dashboard
-        // TODO: to change after for security
-        localStorage.setItem('authToken', data.token)
-        localStorage.setItem('user', JSON.stringify(data.user))
-        router.push('/dashboard')
+        // Success! The server has set secure HTTP-only cookies
+        window.location.href = '/dashboard'
       } else {
         setError(data.error || 'Registration failed')
       }

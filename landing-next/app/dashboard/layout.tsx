@@ -9,71 +9,37 @@ import {
   Folder,
   MessageSquare,
   BarChart3,
-  User,
+  User as UserIcon,
   Settings,
   LogOut,
   Bell
 } from 'lucide-react'
 import { GradientOrbs } from '../components/GradientOrbs'
-
-interface User {
-  id: number
-  email: string
-  username?: string
-  first_name?: string
-  last_name?: string
-  is_active: boolean
-  created_at: string
-}
+import SecureAuthGuard, { useAuth } from '../components/SecureAuthGuard'
+import { User } from '../../types/auth'
 
 export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
-  const [user, setUser] = useState<User | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const router = useRouter()
+  return (
+    <SecureAuthGuard>
+      <DashboardLayoutContent>{children}</DashboardLayoutContent>
+    </SecureAuthGuard>
+  )
+}
+
+function DashboardLayoutContent({ 
+  children 
+}: { 
+  children: React.ReactNode 
+}) {
+  const { user, logout } = useAuth()
   const pathname = usePathname()
 
-  useEffect(() => {
-    checkAuth()
-  }, [])
-
-  const checkAuth = async () => {
-    try {
-      const token = localStorage.getItem('authToken')
-      if (!token) {
-        router.push('/login')
-        return
-      }
-
-      const response = await fetch('/api/auth/me', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (response.ok) {
-        const userData = await response.json()
-        setUser(userData)
-      } else {
-        localStorage.removeItem('authToken')
-        localStorage.removeItem('user')
-        router.push('/login')
-      }
-    } catch (error) {
-      console.error('Auth check failed:', error)
-      router.push('/login')
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleLogout = () => {
-    localStorage.removeItem('authToken')
-    localStorage.removeItem('user')
-    router.push('/login')
+  const handleLogout = async () => {
+    await logout()
   }
 
   const navItems = [
@@ -81,26 +47,12 @@ export default function DashboardLayout({
     { href: '/dashboard/files', icon: Folder, label: 'Files' },
     { href: '/dashboard/chat', icon: MessageSquare, label: 'AI Chat' },
     { href: '/dashboard/analytics', icon: BarChart3, label: 'Analytics' },
-    { href: '/dashboard/profile', icon: User, label: 'Profile' },
+    { href: '/dashboard/profile', icon: UserIcon, label: 'Profile' },
     { href: '/dashboard/settings', icon: Settings, label: 'Settings' }
   ]
 
-  if (isLoading) {
-    return (
-      <div className="relative min-h-screen bg-gray-900">
-        <GradientOrbs />
-        <div className="flex items-center justify-center min-h-screen">
-          <div className="flex items-center space-x-2 text-white">
-            <div className="w-8 h-8 border-2 border-white/30 border-t-emerald-500 rounded-full animate-spin"></div>
-            <span>Loading...</span>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   return (
-    <div className="relative min-h-screen bg-gray-900">
+    <div className="fixed inset-0 bg-gray-900 overflow-hidden">
       <GradientOrbs />
       
       {/* Sidebar */}
@@ -131,15 +83,15 @@ export default function DashboardLayout({
             <div className="flex items-center space-x-3">
               <div className="w-10 h-10 bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full flex items-center justify-center">
                 <span className="text-white font-semibold text-sm">
-                  {user?.first_name?.[0]}{user?.last_name?.[0]}
+                  {user?.first_name?.[0] || 'U'}{user?.last_name?.[0] || 'U'}
                 </span>
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-white text-sm font-medium truncate">
-                  {user?.first_name} {user?.last_name}
+                  {user?.first_name || 'User'} {user?.last_name || ''}
                 </p>
                 <p className="text-white/60 text-xs truncate">
-                  {user?.email}
+                  {user?.email || 'user@example.com'}
                 </p>
               </div>
               <button
@@ -155,7 +107,7 @@ export default function DashboardLayout({
       </div>
 
       {/* Main Content */}
-      <div className="ml-64 min-h-screen">
+      <div className="ml-64 h-full overflow-auto bg-gray-900">
         {children}
       </div>
     </div>

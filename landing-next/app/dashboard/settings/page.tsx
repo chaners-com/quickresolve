@@ -181,6 +181,8 @@ export default function SettingsPage() {
             <div>
               <h1 className="text-3xl font-bold text-white">Settings</h1>
               <p className="text-white/60 mt-1">Manage your preferences and configuration</p>
+              {/* TODO: actual data */}
+              <p className="text-white/60 mt-1">Mock data -- Soon to be updated</p> 
             </div>
           </div>
 

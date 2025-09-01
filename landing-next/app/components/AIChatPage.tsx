@@ -59,6 +59,7 @@ export default function AIChatPage() {
   const [retrievedSources, setRetrievedSources] = useState<RetrievedDocument[]>([])
   const [showSources, setShowSources] = useState(false)
   const [selectedDocument, setSelectedDocument] = useState<RetrievedDocument | null>(null)
+  const [showClearConfirm, setShowClearConfirm] = useState(false)
   
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const router = useRouter()
@@ -73,40 +74,73 @@ export default function AIChatPage() {
 
   const checkAuth = async () => {
     try {
-      const token = localStorage.getItem('authToken')
-      if (!token) {
-        router.push('/login')
-        return
-      }
-
-      const response = await fetch('/api/auth/me', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (response.ok) {
-        const userData = await response.json()
+      // Check authentication using the same logic as FileUploadPage
+      const authResponse = await fetch('/api/auth/me')
+      if (authResponse.ok) {
+        const userData = await authResponse.json()
         setUser(userData)
-        await loadWorkspaces(userData.id)
+        
+        // Get the ingestion service user and load workspaces
+        const username = userData.username || `${userData.first_name}_${userData.last_name}`.toLowerCase()
+        console.log(`[DEBUG] AI Chat - Loading workspaces for username: ${username}`)
+        const ingestionUser = await getOrCreateUser(username)
+        if (ingestionUser) {
+          await loadWorkspaces(ingestionUser.id)
+        }
       } else {
-        localStorage.removeItem('authToken')
-        localStorage.removeItem('user')
         router.push('/login')
       }
     } catch (error) {
-      console.error('Auth check failed:', error)
+      console.error('Failed to initialize chat:', error)
+      addSystemMessage('Failed to initialize chat. Please refresh the page.')
       router.push('/login')
     } finally {
       setIsLoading(false)
     }
   }
 
+  const getOrCreateUser = async (username: string) => {
+    try {
+      console.log(`[DEBUG] AI Chat - Getting/creating user: ${username}`)
+      
+      // First, try to find the user
+      const existingResponse = await fetch(`/api/users?username=${encodeURIComponent(username)}`)
+      if (existingResponse.ok) {
+        const existingUsers = await existingResponse.json()
+        if (existingUsers && existingUsers.length > 0) {
+          console.log(`[DEBUG] AI Chat - Found existing user:`, existingUsers[0])
+          return existingUsers[0]
+        }
+      }
+
+      // If user doesn't exist, create them
+      const createResponse = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username })
+      })
+
+      if (createResponse.ok) {
+        const newUser = await createResponse.json()
+        console.log(`[DEBUG] AI Chat - Created new user:`, newUser)
+        return newUser
+      } else {
+        console.error(`[DEBUG] AI Chat - Failed to create user, status: ${createResponse.status}`)
+        return null
+      }
+    } catch (error) {
+      console.error('Failed to get/create user:', error)
+      return null
+    }
+  }
+
   const loadWorkspaces = async (userId: number) => {
     try {
+      console.log(`[DEBUG] AI Chat - Loading workspaces for userId: ${userId}`)
       const response = await fetch(`/api/workspaces?owner_id=${userId}`)
       if (response.ok) {
         const workspaceData = await response.json()
+        console.log(`[DEBUG] AI Chat - Loaded ${workspaceData.length} workspaces:`, workspaceData)
         setWorkspaces(workspaceData)
         if (workspaceData.length > 0) {
           setSelectedWorkspace(workspaceData[0].id)
@@ -114,6 +148,9 @@ export default function AIChatPage() {
         } else {
           addSystemMessage('No workspaces available. Please create a workspace and upload documents first.')
         }
+      } else {
+        console.error(`[DEBUG] AI Chat - Failed to load workspaces, status: ${response.status}`)
+        addSystemMessage('Failed to load workspaces. Please refresh the page.')
       }
     } catch (error) {
       console.error('Failed to load workspaces:', error)
@@ -222,14 +259,17 @@ export default function AIChatPage() {
   }
 
   const clearConversation = () => {
-    if (confirm('Are you sure you want to clear the conversation?')) {
-      setMessages([])
-      setRetrievedSources([])
-      if (selectedWorkspace) {
-        const workspace = workspaces.find(w => w.id === selectedWorkspace)
-        addSystemMessage(`Conversation cleared. Connected to workspace: ${workspace?.name || 'Unknown'}`)
-      }
+    setShowClearConfirm(true)
+  }
+
+  const confirmClearConversation = () => {
+    setMessages([])
+    setRetrievedSources([])
+    if (selectedWorkspace) {
+      const workspace = workspaces.find(w => w.id === selectedWorkspace)
+      addSystemMessage(`Conversation cleared. Connected to workspace: ${workspace?.name || 'Unknown'}`)
     }
+    setShowClearConfirm(false)
   }
 
   const formatSourceName = (s3Key: string) => {
@@ -239,30 +279,27 @@ export default function AIChatPage() {
 
   if (isLoading) {
     return (
-      <div className="relative min-h-screen bg-gray-900">
-        <GradientOrbs />
-        <div className="flex items-center justify-center min-h-screen">
-          <div className="flex items-center space-x-2 text-white">
-            <div className="w-8 h-8 border-2 border-white/30 border-t-emerald-500 rounded-full animate-spin"></div>
-            <span>Loading...</span>
-          </div>
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="flex items-center space-x-2 text-white">
+          <div className="w-8 h-8 border-2 border-white/30 border-t-emerald-500 rounded-full animate-spin"></div>
+          <span>Loading...</span>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="relative min-h-screen bg-gray-900">
+    <div className="relative h-screen bg-gray-900 overflow-hidden">
       <GradientOrbs />
       
-      <div className="container mx-auto px-6 py-8 h-screen flex flex-col">
+      <div className="container mx-auto px-6 py-8 h-full flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-4 flex-shrink-0">
           <div className="flex items-center space-x-3">
-            <Bot className="text-emerald-400" size={32} />
+            <Bot className="text-emerald-400" size={24} />
             <div>
-              <h1 className="text-2xl font-bold text-white">AI Assistant</h1>
-              <p className="text-white/60">Chat with your documents</p>
+              <h1 className="text-xl font-bold text-white">AI Assistant</h1>
+              <p className="text-white/60 text-sm">Chat with your documents</p>
             </div>
           </div>
           
@@ -296,12 +333,20 @@ export default function AIChatPage() {
         </div>
 
         {/* Main Content */}
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-4 gap-6 min-h-0">
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-4 gap-6 min-h-0 overflow-hidden">
           {/* Chat Area */}
-          <div className="lg:col-span-3 flex flex-col">
-            <GlassCard className="flex-1 flex flex-col min-h-0">
+          <div className="lg:col-span-3 flex flex-col min-h-0 h-full">
+            <GlassCard className="flex-1 flex flex-col min-h-0 h-full">
               {/* Messages */}
-              <div className="flex-1 p-6 overflow-y-auto space-y-4" style={{ minHeight: 0 }}>
+              <div 
+                className="flex-1 p-6 space-y-4 min-h-0" 
+                style={{ 
+                  overflowY: 'auto',
+                  scrollbarWidth: 'thin',
+                  scrollbarColor: 'rgba(75, 85, 99, 0.5) rgba(31, 41, 55, 0.3)',
+                  height: 'calc(100vh - 260px)'
+                }}
+              >
                 {messages.map((message) => (
                   <MessageBubble key={message.id} message={message} />
                 ))}
@@ -325,7 +370,7 @@ export default function AIChatPage() {
               </div>
 
               {/* Input */}
-              <div className="p-6 border-t border-white/10">
+              <div className="p-6 border-t border-white/10 flex-shrink-0">
                 <div className="flex items-end space-x-4">
                   <div className="flex-1">
                     <textarea
@@ -355,7 +400,7 @@ export default function AIChatPage() {
           </div>
 
           {/* Sidebar */}
-          <div className="lg:col-span-1 space-y-4">
+          <div className="lg:col-span-1 space-y-4 overflow-y-auto">
             {/* Conversation Info */}
             <GlassCard className="p-4">
               <h3 className="text-white font-semibold mb-3 flex items-center space-x-2">
@@ -458,6 +503,47 @@ export default function AIChatPage() {
               <div className="flex-1 p-4 overflow-y-auto">
                 <div className="text-white/80 text-sm leading-relaxed whitespace-pre-wrap">
                   {selectedDocument.content}
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Clear Conversation Confirmation */}
+        {showClearConfirm && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="bg-white/10 backdrop-blur-lg rounded-xl border border-white/20 max-w-md w-full"
+            >
+              <div className="flex items-center justify-between p-6 border-b border-white/10">
+                <h3 className="text-white font-semibold text-lg flex items-center space-x-2">
+                  <Trash2 size={20} className="text-red-400" />
+                  <span>Clear Conversation</span>
+                </h3>
+              </div>
+              
+              <div className="p-6">
+                <p className="text-white/80 mb-6">
+                  Are you sure you want to clear the entire conversation? This action cannot be undone.
+                </p>
+                
+                <div className="flex justify-end space-x-3">
+                  <button
+                    onClick={() => setShowClearConfirm(false)}
+                    className="px-4 py-2 text-white/60 hover:text-white border border-white/20 rounded-lg hover:border-white/40 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={confirmClearConversation}
+                    className="px-6 py-2 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-lg font-medium"
+                  >
+                    Clear Chat
+                  </motion.button>
                 </div>
               </div>
             </motion.div>

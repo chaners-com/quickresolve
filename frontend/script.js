@@ -379,9 +379,11 @@ uploadBtn.addEventListener('click', async () => {
         
         // Poll until terminal state for this file (existing id-based polling)
         pollFileStatus(file.name, fileStatusUrl, (final) => {
-            if (final.status === 3 && !failedFiles.includes(file.name)) {
+            if (final.status_code === 3 && !failedFiles.includes(file.name)) {
               failedFiles.push(file.name);
-            } else if (final.status === 2) {
+            }
+            
+            if (final.status_code === 2) {
               doneCount += 1;
             }
             setOverall(doneCount, totalFiles, failedFiles);

@@ -41,6 +41,17 @@ async def _update_task_status(task_id: Optional[str], **kwargs):
         pass
 
 
+# Global cap for concurrent embed tasks across
+# all pipelines (per service instance)
+try:
+    MAX_EMBEDDING_CONCURRENT_TASKS = max(
+        1, int(os.getenv("MAX_EMBEDDING_CONCURRENT_TASKS", "4") or "4")
+    )
+except ValueError:
+    MAX_EMBEDDING_CONCURRENT_TASKS = 4
+EMBED_SEM = asyncio.Semaphore(MAX_EMBEDDING_CONCURRENT_TASKS)
+
+
 @app.get("/health")
 async def health():
     return {"status": "healthy", "service": "index-document-service"}
@@ -202,14 +213,12 @@ async def _create_and_wait_task(
             raise RuntimeError(f"Task {name} {task_id} failed")
 
 
-ASYNC_LIMIT = 4
-
-
 async def _run_embed_fanout(
     client: httpx.AsyncClient, chunks: List[Dict[str, Any]], workspace_id: int
 ):
-    # Run multiple embed tasks and wait for all to complete
-    sem = asyncio.Semaphore(ASYNC_LIMIT)
+    # Run multiple embed tasks and wait
+    # for all to complete (globally capped by EMBED_SEM)
+    sem = EMBED_SEM
 
     async def _one(chunk: Dict[str, Any]):
         async with sem:

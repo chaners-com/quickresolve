@@ -7,26 +7,23 @@
         <mxCell id="cALypRrA-Yns0GImuqxs-13" value="Index Document Pipeline" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
           <mxGeometry x="120" y="90" width="210" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="cALypRrA-Yns0GImuqxs-34" value="ingest" style="shape=step;perimeter=stepPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
-          <mxGeometry x="120" y="120" width="100" height="40" as="geometry" />
-        </mxCell>
         <mxCell id="cALypRrA-Yns0GImuqxs-35" value="parse" style="shape=step;perimeter=stepPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
-          <mxGeometry x="200" y="120" width="100" height="40" as="geometry" />
+          <mxGeometry x="159" y="120" width="100" height="40" as="geometry" />
         </mxCell>
         <mxCell id="cALypRrA-Yns0GImuqxs-36" value="redact" style="shape=step;perimeter=stepPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
-          <mxGeometry x="280" y="120" width="100" height="40" as="geometry" />
+          <mxGeometry x="239" y="120" width="100" height="40" as="geometry" />
         </mxCell>
         <mxCell id="cALypRrA-Yns0GImuqxs-41" value="..." style="shape=step;perimeter=stepPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
-          <mxGeometry x="360" y="120" width="100" height="40" as="geometry" />
+          <mxGeometry x="319" y="120" width="100" height="40" as="geometry" />
         </mxCell>
         <mxCell id="cALypRrA-Yns0GImuqxs-42" value="chunk" style="shape=step;perimeter=stepPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
-          <mxGeometry x="440" y="120" width="100" height="40" as="geometry" />
+          <mxGeometry x="399" y="120" width="100" height="40" as="geometry" />
         </mxCell>
         <mxCell id="cALypRrA-Yns0GImuqxs-43" value="embed" style="shape=step;perimeter=stepPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
-          <mxGeometry x="520" y="120" width="100" height="40" as="geometry" />
+          <mxGeometry x="479" y="120" width="100" height="40" as="geometry" />
         </mxCell>
         <mxCell id="cALypRrA-Yns0GImuqxs-44" value="index" style="shape=step;perimeter=stepPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
-          <mxGeometry x="600" y="120" width="100" height="40" as="geometry" />
+          <mxGeometry x="559" y="120" width="100" height="40" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>

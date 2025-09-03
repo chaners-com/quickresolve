@@ -16,11 +16,16 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
+# Install bash and netcat for wait-for-it script
+RUN apk add --no-cache bash netcat-openbsd
+
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
+COPY wait-for-it.sh ./wait-for-it.sh
+RUN chmod +x ./wait-for-it.sh
 
 EXPOSE 3000
-CMD ["npm", "run", "start"]
+CMD ["./wait-for-it.sh", "auth-service:8000", "--timeout=60", "--", "npm", "run", "start"]
 

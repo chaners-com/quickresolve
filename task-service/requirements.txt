@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+# For JSON columns and serialization
+pydantic
+# Testing (optional)
+pytest
+pytest-cov
+httpx

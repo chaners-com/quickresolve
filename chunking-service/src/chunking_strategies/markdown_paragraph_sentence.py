@@ -8,7 +8,7 @@ import hashlib
 import os
 import re
 import time
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Dict
 from uuid import uuid4
 
 from langchain.text_splitter import (
@@ -19,7 +19,7 @@ from langchain.text_splitter import (
     TokenTextSplitter,
 )
 
-from .base import Chunk, Chunker
+from .base import Chunk, ChunkingStrategy
 
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "400"))
 CHUNK_OVERLAP_TOKENS = int(
@@ -31,7 +31,7 @@ CHUNK_CHAR_MAX = int(os.getenv("CHUNK_CHAR_MAX", "4000"))
 STRATEGY_NAME = os.getenv(
     "CHUNKING_STRATEGY_NAME", "markdown+paragraph+sentence"
 )
-STRATEGY_VERSION = os.getenv("CHUNKING_STRATEGY_VERSION", "1.0")
+STRATEGY_VERSION = os.getenv("CHUNKING_STRATEGY_VERSION", "multistrategy-1")
 STRATEGY_TOOL_NAME = os.getenv(
     "CHUNKING_STRATEGY_TOOL_NAME", "chunking-strategy"
 )
@@ -79,11 +79,28 @@ def _split_headings(markdown_text: str) -> List[Tuple[str, List[str]]]:
     sections: List[Tuple[str, List[str]]] = []
     for doc in docs:
         section_text = getattr(doc, "page_content", "")
-        headers = []
+        headers: List[str] = []
         meta = getattr(doc, "metadata", {}) or {}
         if isinstance(meta, dict):
-            headers = meta.get("headers", []) or []
-        headers = _normalize_headers(headers)
+            raw_headers = meta.get("headers")
+            if raw_headers:
+                headers = _normalize_headers(raw_headers)
+            else:
+                # Fallback: collect keys like h1/h2/h3 or "header 1", "Header2"
+                candidates: List[Tuple[int, str]] = []
+                for key, value in meta.items():
+                    if not value:
+                        continue
+                    key_norm = str(key).lower().replace(" ", "")
+                    m = re.search(r"(?:^h|header)(\d+)$", key_norm)
+                    if m:
+                        try:
+                            level = int(m.group(1))
+                        except Exception:
+                            level = 99
+                        candidates.append((level, str(value)))
+                if candidates:
+                    headers = [v for _, v in sorted(candidates, key=lambda x: x[0])]
         sections.append((section_text, headers))
     if not sections:
         sections = [(markdown_text, [])]
@@ -192,7 +209,7 @@ def _pack_paragraphs(paragraphs: List[str]) -> List[str]:
     return final_chunks
 
 
-class MarkdownParagraphSentenceChunker(Chunker):
+class MarkdownParagraphSentenceChunkingStrategy(ChunkingStrategy):
     def chunk(
         self,
         *,
@@ -206,6 +223,10 @@ class MarkdownParagraphSentenceChunker(Chunker):
         sections = _split_headings(text)
         all_chunks: List[Chunk] = []
         next_index = 0
+
+        # Track first chunk id for the last seen section at each depth
+        first_chunk_by_depth: Dict[int, str] = {}
+
         for section_text, section_path in sections:
             paragraphs = _split_paragraphs(section_text)
             chunks_text = (
@@ -214,8 +235,38 @@ class MarkdownParagraphSentenceChunker(Chunker):
                 else _pack_paragraphs(_split_sentences(section_text))
             )
             section_local_index = 0
+
+            # Determine parent section's first chunk id (nearest previous major of lower depth)
+            depth = max(1, len(section_path))
+            parent_first_chunk_id: Optional[str] = None
+            for d in range(depth - 1, 0, -1):
+                if d in first_chunk_by_depth:
+                    parent_first_chunk_id = first_chunk_by_depth[d]
+                    break
+            # Fallback to previous section of the same depth if no higher-level parent found
+            if parent_first_chunk_id is None and depth in first_chunk_by_depth:
+                parent_first_chunk_id = first_chunk_by_depth[depth]
+
+            first_chunk_id_current_section: Optional[str] = None
+
             for content in chunks_text:
                 chunk_id = str(uuid4()).lower()
+                # Prefix content with section header for context, if present
+                if section_path:
+                    header_depth = max(1, min(len(section_path), 6))
+                    header_line = f"{'#' * header_depth} {section_path[-1]}\n"
+                    content_full = f"{header_line}{content}".strip()
+                else:
+                    content_full = content
+
+                # Build version object
+                parser_version = document_parser_version or ""
+                version: Dict[str, object] = {
+                    "chunking_strategy": STRATEGY_VERSION,
+                }
+                if parser_version:
+                    version["parser"] = parser_version
+
                 payload: Chunk = {
                     "created_at": int(time.time()),
                     "s3_key": s3_key,
@@ -230,38 +281,33 @@ class MarkdownParagraphSentenceChunker(Chunker):
                     "section_path": section_path,
                     "section_title": section_path[-1] if section_path else "",
                     "section_index": section_local_index,
-                    "tokens": _estimate_tokens_len(content),
-                    "overlap_tokens": CHUNK_OVERLAP_TOKENS,
-                    "version": {
-                        "splitter": {
-                            "name": STRATEGY_NAME,
-                            "version": STRATEGY_VERSION,
-                            "tool": {
-                                "name": STRATEGY_TOOL_NAME,
-                                "version": STRATEGY_TOOL_VERSION,
-                            },
-                        },
-                        "embedding_model": "models/embedding-001",
-                        "parser": {
-                            "version": document_parser_version or "unknown",
-                        },
-                    },
-                    "version_alias": f"{(document_parser_version or 'unknown')}:"
-                    + "md-multistrategy-1.0:embeddings-001:",
+                    # overlap tokens: 0 for this strategy's header-based splitting
+                    "tokens": _estimate_tokens_len(content_full),
+                    "overlap_tokens": 0,
+                    "version": version,
+                    "version_alias": f"{(parser_version or '')}:"
+                    + STRATEGY_VERSION,
                     "domain": "",
                     "document_type": "",
-                    "parent_id": str(file_id),
+                    "parent_id": parent_first_chunk_id,
                     "keywords": [],
                     "entities": [],
                     "language": "en",
-                    "hash": _sha256_of_content(content),
+                    "hash": _sha256_of_content(content_full),
                     "summary": "",
                     "provenance": {"original_s3_key": s3_key, "parsed": True},
-                    "content": content,
+                    "content": content_full,
                 }
+
+                # Capture first chunk id for this section
+                if first_chunk_id_current_section is None:
+                    first_chunk_id_current_section = chunk_id
+                    first_chunk_by_depth[depth] = chunk_id
+
                 all_chunks.append(payload)
                 next_index += 1
                 section_local_index += 1
+
         # relational fields
         total = len(all_chunks)
         for i, d in enumerate(all_chunks):
@@ -270,4 +316,4 @@ class MarkdownParagraphSentenceChunker(Chunker):
                 d["previous_chunk_id"] = all_chunks[i - 1]["chunk_id"]
             if i < total - 1:
                 d["next_chunk_id"] = all_chunks[i + 1]["chunk_id"]
-        return all_chunks
+        return all_chunks 

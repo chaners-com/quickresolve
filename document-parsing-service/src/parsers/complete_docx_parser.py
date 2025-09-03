@@ -8,7 +8,7 @@ from typing import List, Tuple
 
 
 class CompleteDOCXParser:
-    VERSION = "complete-docx-parser-1.0.0"
+    VERSION = "complete-docx-parser-1"
 
     @staticmethod
     async def parse(

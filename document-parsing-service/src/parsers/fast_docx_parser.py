@@ -10,7 +10,7 @@ from typing import List, Tuple
 
 
 class FastDOCXParser:
-    VERSION = "fast-docx-parser-1.0.0"
+    VERSION = "fast-docx-parser-1"
 
     @staticmethod
     async def parse(content: bytes, context: dict) -> Tuple[str, List[dict]]:

@@ -18,7 +18,7 @@ from qdrant_client.http.exceptions import UnexpectedResponse
 
 class FileInfo(BaseModel):
     s3_key: str
-    file_id: int
+    file_id: str
     workspace_id: int
 
 
@@ -31,6 +31,7 @@ class SearchResult(BaseModel):
 class EmbedChunkRequest(BaseModel):
     workspace_id: int
     chunk_id: str
+    task_id: Optional[str] = None
 
 
 # --- App and Clients Setup ---
@@ -48,22 +49,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"))
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"), timeout=60)
+TASK_SERVICE_URL = os.getenv("TASK_SERVICE_URL", "http://task-service:8010")
+GENAI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GENAI_API_KEY:
+    genai.configure(api_key=GENAI_API_KEY)
 embedding_model = "models/embedding-001"
 
+S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://minio:9000")
+S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
+S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
+S3_BUCKET = os.getenv("S3_BUCKET")
+
+# Clients
 s3 = boto3.client(
     "s3",
-    endpoint_url=os.getenv("S3_ENDPOINT"),
-    aws_access_key_id=os.getenv("S3_ACCESS_KEY"),
-    aws_secret_access_key=os.getenv("S3_SECRET_KEY"),
+    endpoint_url=S3_ENDPOINT,
+    aws_access_key_id=S3_ACCESS_KEY,
+    aws_secret_access_key=S3_SECRET_KEY,
 )
-S3_BUCKET = os.getenv("S3_BUCKET")
+
 QDRANT_COLLECTION_NAME = "file_embeddings"
 
-INGESTION_SERVICE_URL = os.getenv(
-    "INGESTION_SERVICE_URL", "http://ingestion-service:8000"
-)
 
 # --- Health ---
 
@@ -105,86 +112,39 @@ def startup_event():
         )
 
 
-async def _update_file_status_async(file_id: int, status: int):
-    """Asynchronously update file status in ingestion service."""
+async def _update_task_status(task_id: Optional[str], **kwargs):
+    if not task_id:
+        return
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.put(
-                f"{INGESTION_SERVICE_URL}/files/{file_id}/status",
-                params={"status": status},
-            )
-    except Exception as e:
-        # Log but don't fail the embedding request
-        print(
-            f"""Warning: failed to update file status for
-        {file_id}: {e}"""
-        )
+            await client.put(f"{TASK_SERVICE_URL}/task/{task_id}", json=kwargs)
+    except Exception:
+        pass
 
 
-@app.post("/embed/")
-async def embed_file(file_info: FileInfo):
-    """Downloads a file, generates embeddings, and stores them in Qdrant.
-    On any failure, mark file status=3 via ingestion-service.
-    On success, do not change status.
-    """
-    try:
-        response = s3.get_object(Bucket=S3_BUCKET, Key=file_info.s3_key)
-        file_content = response["Body"].read().decode("utf-8")
-    except Exception as e:
-        asyncio.create_task(_update_file_status_async(file_info.file_id, 3))
-        raise HTTPException(
-            status_code=500, detail=f"Failed to download from S3: {e}"
-        )
-
-    try:
-        embedding = genai.embed_content(
-            model=embedding_model,
-            content=file_content,
-            task_type="retrieval_document",
-        )["embedding"]
-    except Exception as e:
-        asyncio.create_task(_update_file_status_async(file_info.file_id, 3))
-        raise HTTPException(
-            status_code=500, detail=f"Failed to generate embedding: {e}"
-        )
-
-    try:
-        qdrant_client.upsert(
-            collection_name=QDRANT_COLLECTION_NAME,
-            points=[
-                models.PointStruct(
-                    id=file_info.file_id,
-                    vector=embedding,
-                    payload={
-                        "workspace_id": file_info.workspace_id,
-                        "s3_key": file_info.s3_key,
-                    },
-                )
-            ],
-            wait=True,
-        )
-    except Exception as e:
-        asyncio.create_task(_update_file_status_async(file_info.file_id, 3))
-        raise HTTPException(
-            status_code=500, detail=f"Failed to upsert to Qdrant: {e}"
-        )
-
-    # Mark file as Done (2) in ingestion-service asynchronously
-    asyncio.create_task(_update_file_status_async(file_info.file_id, 2))
-
-    return {"message": f"Successfully embedded file {file_info.s3_key}"}
+def _retry_backoff_delays(max_attempts: int = 3) -> list[float]:
+    return [0.5 * (2**i) for i in range(max_attempts)]
 
 
 @app.post("/embed-chunk")
 async def embed_chunk(req: EmbedChunkRequest):
-    """Retrieve canonical chunk payload
-    from S3 and upsert embedding by chunk_id."""
+    await _update_task_status(
+        req.task_id, status_code=1, status={"message": "running"}
+    )
+    # Retrieve canonical chunk payload
+    # from S3 and upsert embedding by chunk_id.
     try:
         key = f"{req.workspace_id}/payload/{req.chunk_id}.json"
         obj = s3.get_object(Bucket=S3_BUCKET, Key=key)
         payload_bytes = obj["Body"].read()
         payload = json.loads(payload_bytes.decode("utf-8"))
     except Exception as e:
+        print(f"Failed to fetch chunk payload: {e}")
+        await _update_task_status(
+            req.task_id,
+            status_code=3,
+            status={"message": f"fetch chunk failed: {e}"},
+        )
         raise HTTPException(
             status_code=500, detail=f"Failed to fetch chunk payload: {e}"
         )
@@ -199,38 +159,59 @@ async def embed_chunk(req: EmbedChunkRequest):
             task_type="retrieval_document",
         )["embedding"]
     except Exception as e:
-        asyncio.create_task(
-            _update_file_status_async(payload.get("file_id"), 3)
+        print(f"Failed to generate chunk embedding: {e}")
+        await _update_task_status(
+            req.task_id,
+            status_code=3,
+            status={"message": f"embedding failed: {e}"},
         )
         raise HTTPException(
             status_code=500, detail=f"Failed to generate chunk embedding: {e}"
         )
 
-    try:
-        qdrant_client.upsert(
-            collection_name=QDRANT_COLLECTION_NAME,
-            points=[
-                models.PointStruct(
-                    id=payload.get("chunk_id"),
-                    vector=embedding,
-                    payload=payload,
-                )
-            ],
-            wait=True,
-        )
+    # Ensure version.embedding_model is populated by embedding-service
+    version = payload.get("version") or {}
+    if isinstance(version, dict):
+        version["embedding_model"] = embedding_model
+        payload["version"] = version
 
-        # Mark file as Done (2) in ingestion-service asynchronously
-        asyncio.create_task(
-            _update_file_status_async(payload.get("file_id"), 2)
-        )
-    except Exception as e:
-        asyncio.create_task(
-            _update_file_status_async(payload.get("file_id"), 3)
+    # Upsert with retries, non-blocking
+    for delay in _retry_backoff_delays(3):
+        try:
+            qdrant_client.upsert(
+                collection_name=QDRANT_COLLECTION_NAME,
+                points=[
+                    models.PointStruct(
+                        id=payload.get("chunk_id"),
+                        vector=embedding,
+                        payload=payload,
+                    )
+                ],
+                wait=False,
+            )
+            break
+        except Exception as e:
+            print(f"Failed to upsert chunk to Qdrant: {e}")
+            last_err = e
+            if delay > 0:
+                await asyncio.sleep(delay)
+    else:
+        print(f"Failed to upsert chunk to Qdrant (2): {last_err}")
+        await _update_task_status(
+            req.task_id,
+            status_code=3,
+            status={"message": f"qdrant upsert failed: {last_err}"},
         )
         raise HTTPException(
-            status_code=500, detail=f"Failed to upsert chunk to Qdrant: {e}"
+            status_code=500,
+            detail=f"Failed to upsert chunk to Qdrant: {last_err}",
         )
 
+    await _update_task_status(
+        req.task_id,
+        status_code=2,
+        output={"chunk_id": payload.get("chunk_id")},
+    )
     return {
         "success": True,
         "chunk_id": payload.get("chunk_id"),
@@ -238,41 +219,48 @@ async def embed_chunk(req: EmbedChunkRequest):
     }
 
 
+@app.post("/embed/")
+async def embed_stub():
+    return {"accepted": True}
+
+
 @app.get("/search/", response_model=list[SearchResult])
 async def search(query: str, workspace_id: int, top_k: int = 5):
-    """Embeds a query and searches for similar vectors in a specific \
-workspace."""
-    try:
-        query_embedding = genai.embed_content(
-            model=embedding_model, content=query, task_type="retrieval_query"
-        )["embedding"]
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to generate query embedding: {e}"
-        )
-
-    try:
-        search_results = qdrant_client.search(
-            collection_name=QDRANT_COLLECTION_NAME,
-            query_vector=query_embedding,
-            query_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="workspace_id",
-                        match=models.MatchValue(value=workspace_id),
-                    )
-                ]
-            ),
-            limit=top_k,
-            with_payload=True,
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to search in Qdrant: {e}"
-        )
-
-    results = [
-        SearchResult(id=hit.id, payload=hit.payload, score=hit.score)
-        for hit in search_results
-    ]
-    return results
+    # Add lightweight retry for transient errors
+    last_err: Exception | None = None
+    for delay in _retry_backoff_delays(3):
+        try:
+            query_embedding = genai.embed_content(
+                model=embedding_model,
+                content=query,
+                task_type="retrieval_query",
+            )["embedding"]
+            search_results = qdrant_client.search(
+                collection_name=QDRANT_COLLECTION_NAME,
+                query_vector=query_embedding,
+                query_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="workspace_id",
+                            match=models.MatchValue(value=workspace_id),
+                        )
+                    ]
+                ),
+                limit=top_k,
+                with_payload=True,
+                timeout=60,
+            )
+            results = [
+                SearchResult(id=hit.id, payload=hit.payload, score=hit.score)
+                for hit in search_results
+            ]
+            return results
+        except Exception as e:
+            print(f"Failed to search in Qdrant: {e}")
+            last_err = e
+            if delay > 0:
+                await asyncio.sleep(delay)
+    print(f"Failed to search in Qdrant (2): {last_err}")
+    raise HTTPException(
+        status_code=500, detail=f"Failed to search in Qdrant: {last_err}"
+    )

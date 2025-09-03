@@ -1,12 +1,22 @@
+import asyncio
 import os
+import shutil
+import tempfile
 import time
+from uuid import UUID
 
 import boto3
 import httpx
 from database import Base
 from database import File as DBFile
-from database import User, Workspace, engine, get_db_with_retry, get_db_session, File as DBFile
-from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile
+from database import SessionLocal, User, Workspace, engine, get_db_with_retry, get_db_session
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Response,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text  # Import text function
@@ -35,11 +45,6 @@ class WorkspaceResponse(WorkspaceCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
-class FileStatusResponse(BaseModel):
-    file_id: int
-    status: int
-
-
 app = FastAPI()
 
 # Get CORS origins from environment variable, with fallback to localhost
@@ -52,7 +57,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Location", "Content-Location", "location"],  # From remote
+    expose_headers=["Location", "Content-Location", "location"],
 )
 
 
@@ -166,9 +171,90 @@ def on_startup():
         print(f"S3 bucket '{S3_BUCKET}' created successfully.")
 
 
-@app.post("/uploadfile/")
+async def _trigger_downstream(
+    md: bool, s3_key: str, db_file_id: str, workspace_id: int, filename: str
+):
+    try:
+        task_service_url = os.getenv(
+            "TASK_SERVICE_URL", "http://task-service:8010"
+        )
+        # Always create the index-document pipeline task with full definition
+        steps = []
+        if not md:
+            steps.append({"name": "parse-document"})
+        steps.extend(
+            [
+                {"name": "redact"},
+                {"name": "chunk"},
+                {"name": "embed"},
+            ]
+        )
+        index_definition = {
+            "description": f"Indexing document {db_file_id}",
+            "s3_key": s3_key,
+            "file_id": db_file_id,
+            "workspace_id": workspace_id,
+            "original_filename": filename,
+            "steps": steps,
+        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{task_service_url}/task",
+                json={
+                    "name": "index-document",
+                    "input": index_definition,
+                    "workspace_id": workspace_id,
+                },
+            )
+    except Exception:
+        # best-effort fire-and-forget
+        pass
+
+
+async def _bg_upload_and_trigger(
+    tmp_path: str, s3_bucket: str, s3_key: str, db_file_id: UUID
+) -> None:
+    try:
+        # Upload from temp file path
+        await asyncio.to_thread(s3.upload_file, tmp_path, s3_bucket, s3_key)
+        # Cleanup temp file
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        # Persist s3_key
+        try:
+            db2 = SessionLocal()
+            rec = db2.query(DBFile).filter(DBFile.id == db_file_id).first()
+            if rec:
+                rec.s3_key = s3_key
+                db2.commit()
+        finally:
+            db2.close()
+    except Exception as e:
+        try:
+            db2 = SessionLocal()
+            rec = db2.query(DBFile).filter(DBFile.id == db_file_id).first()
+            if rec:
+                print(f"Failed to upload to S3: {e}")
+                print(f"Marking file {db_file_id} as failed")
+                rec.status = 3
+                db2.commit()
+        finally:
+            db2.close()
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+
+@app.post("/uploadfile", status_code=202)
+@app.post("/uploadfile/", status_code=202)
 async def create_upload_file(
-    file: UploadFile, workspace_id: int, db: Session = Depends(get_db)
+    file: UploadFile,
+    workspace_id: int,
+    db: Session = Depends(get_db),
+    response: Response = None,
 ):
     workspace = (
         db.query(Workspace).filter(Workspace.id == workspace_id).first()
@@ -176,86 +262,102 @@ async def create_upload_file(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    s3_key = f"{workspace.id}/{file.filename}"
+    # 1) Create DB record first to get UUID id
+    db_file = DBFile(
+        name=file.filename,
+        workspace_id=workspace_id,
+        status=1,
+    )
+    db.add(db_file)
+    db.commit()
+    db.refresh(db_file)
 
-    # Overwrite the file in S3
+    # 2) Build S3 key using uuid + original extension
+    _, ext = os.path.splitext(file.filename)
+    ext = (ext or "").lower()
+    s3_key = f"{workspace.id}/{db_file.id}{ext}"
+
+    # Persist incoming upload to a temporary file before returning,
+    # so background task can read it
     try:
-        s3.upload_fileobj(file.file, S3_BUCKET, s3_key)
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+        # Copy stream to disk off the event loop
+        await asyncio.to_thread(
+            _copy_stream_to_path,
+            file.file,
+            tmp_path,
+        )
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to upload to S3: {e}"
-        )
-
-    # Check if the file record already exists
-    db_file = db.query(DBFile).filter(DBFile.s3_key == s3_key).first()
-
-    if not db_file:
-        # Create a new file record if it doesn't exist
-        db_file = DBFile(
-            name=file.filename,
-            s3_key=s3_key,
-            workspace_id=workspace_id,
-            status=1,
-        )
-        db.add(db_file)
-        db.commit()
-        db.refresh(db_file)
-
-    # Route by file type: .md -> redaction-service,
-    # .pdf/.doc/.docx -> parsing-service
-    redaction_service_url = os.getenv(
-        "REDACTION_SERVICE_URL", "http://redaction-service:8007"
-    )
-    parsing_service_url = os.getenv(
-        "PARSING_SERVICE_URL", "http://document-parsing-service:8005"
-    )
-    filename_lower = file.filename.lower()
-
-    try:
-        if filename_lower.endswith(".md"):
-            # Forward MD files to redaction-service
-            # (pass-through -> chunking-service)
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                await client.post(
-                    f"{redaction_service_url}/redact",
-                    json={
-                        "s3_key": s3_key,
-                        "file_id": db_file.id,
-                        "workspace_id": workspace_id,
-                        "original_filename": file.filename,
-                    },
-                )
-        elif (
-            filename_lower.endswith(".pdf")
-            or filename_lower.endswith(".doc")
-            or filename_lower.endswith(".docx")
-        ):
-            # Trigger parsing service; it will upload parsed MD
-            # and then call redaction-service -> chunking-service
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                await client.post(
-                    f"{parsing_service_url}/parse/",
-                    json={
-                        "s3_key": s3_key,
-                        "file_id": db_file.id,
-                        "workspace_id": workspace_id,
-                        "original_filename": file.filename,
-                    },
-                )
-        else:
-            # Unsupported types: mark as error (3) and persist
+        # Mark error and fail fast
+        try:
             db_file.status = 3
             db.commit()
             db.refresh(db_file)
-    except httpx.HTTPError as e:
-        print(f"Failed to trigger downstream service: {e}")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=500, detail=f"Failed to buffer upload: {e}"
+        )
 
-    return {
-        "filename": file.filename,
-        "s3_key": s3_key,
-        "id": db_file.id,
-        "status": db_file.status,
-    }
+    # 3) Upload the file to S3 in background to avoid blocking connection
+    asyncio.create_task(
+        _bg_upload_and_trigger(tmp_path, S3_BUCKET, s3_key, db_file.id)
+    )
+
+    # 4) Create index-document task now and return 202 with Location header
+    try:
+        task_service_url = os.getenv(
+            "TASK_SERVICE_URL", "http://task-service:8010"
+        )
+        is_md = (file.filename or "").lower().endswith(".md")
+        steps = []
+        if not is_md:
+            steps.append({"name": "parse-document"})
+        steps.extend(
+            [
+                {"name": "redact"},
+                {"name": "chunk"},
+                {"name": "embed"},
+            ]
+        )
+        index_definition = {
+            "description": f"Indexing document {db_file.id}",
+            "s3_key": s3_key,
+            "file_id": str(db_file.id),
+            "workspace_id": workspace_id,
+            "original_filename": file.filename or "",
+            "steps": steps,
+        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{task_service_url}/task",
+                json={
+                    "name": "index-document",
+                    "input": index_definition,
+                    "workspace_id": workspace_id,
+                },
+            )
+            r.raise_for_status()
+            task_id = r.json().get("id")
+            if not task_id:
+                raise HTTPException(
+                    status_code=500, detail="Task creation did not return id"
+                )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to create index task: {e}"
+        )
+
+    status_url = f"http://localhost:8010/task/{task_id}/status"
+    return Response(status_code=202, headers={"Location": status_url})
+
+
+def _copy_stream_to_path(src_fileobj, dst_path: str) -> None:
+    src_fileobj.seek(0)
+    with open(dst_path, "wb") as out_f:
+        shutil.copyfileobj(src_fileobj, out_f, length=1024 * 1024)
 
 
 @app.get("/file-content/")
@@ -363,29 +465,3 @@ async def get_all_workspaces(db: Session = Depends(get_db)):
     """
     workspaces = db.query(Workspace).all()
     return workspaces
-
-
-# --- File Status Endpoints ---
-
-
-@app.get("/files/{file_id}/status", response_model=FileStatusResponse)
-async def get_file_status(file_id: int, db: Session = Depends(get_db)):
-    file = db.query(DBFile).filter(DBFile.id == file_id).first()
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileStatusResponse(file_id=file.id, status=file.status)
-
-
-@app.put("/files/{file_id}/status", response_model=FileStatusResponse)
-async def update_file_status(
-    file_id: int,
-    status: int = Query(..., ge=1, le=3),
-    db: Session = Depends(get_db),
-):
-    file = db.query(DBFile).filter(DBFile.id == file_id).first()
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
-    file.status = status
-    db.commit()
-    db.refresh(file)
-    return FileStatusResponse(file_id=file.id, status=file.status)

@@ -9,7 +9,7 @@ from typing import List, Tuple
 
 
 class FastPDFParser:
-    VERSION = "fast-pdf-parser-1.0.0"
+    VERSION = "fast-pdf-parser-1"
 
     @staticmethod
     async def parse(content: bytes, context: dict) -> Tuple[str, List[dict]]:

@@ -36,9 +36,13 @@ class EmbedChunkRequest(BaseModel):
 # --- App and Clients Setup ---
 app = FastAPI()
 
+# Get CORS origins from environment variable, with fallback to localhost
+cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost,http://localhost:8080")
+origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost", "http://localhost:8080"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

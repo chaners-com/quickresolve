@@ -5,7 +5,7 @@ import boto3
 import httpx
 from database import Base
 from database import File as DBFile
-from database import SessionLocal, User, Workspace, engine
+from database import User, Workspace, engine, get_db_with_retry, get_db_session, File as DBFile
 from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
@@ -42,10 +42,9 @@ class FileStatusResponse(BaseModel):
 
 app = FastAPI()
 
-origins = [
-    "http://localhost",
-    "http://localhost:8080",
-]
+# Get CORS origins from environment variable, with fallback to localhost
+cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost,http://localhost:8080,http://localhost:8090")
+origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,7 +52,23 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Location", "Content-Location", "location"],  # From remote
 )
+
+
+@app.middleware("http")
+async def db_connection_middleware(request, call_next):
+    """
+    Middleware to handle database connection issues gracefully.
+    """
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        if "connection" in str(e).lower() or "database" in str(e).lower():
+            print(f"Database connection error in middleware: {e}")
+            return {"detail": "Database connection failed. Please try again.", "status_code": 503}
+        raise e
 
 
 @app.get("/health")
@@ -61,12 +76,32 @@ async def health():
     return {"status": "healthy", "service": "ingestion-service"}
 
 
-def get_db():
-    db = SessionLocal()
+@app.get("/health/db")
+async def health_db():
+    """
+    Check database connection health.
+    """
     try:
+        with get_db_session() as db:
+            db.execute(text("SELECT 1"))
+        return {"status": "healthy", "database": "connected"}
+    except Exception as e:
+        return {"status": "unhealthy", "database": "disconnected", "error": str(e)}
+
+
+def get_db():
+    """
+    Database dependency with retry logic and proper error handling.
+    """
+    try:
+        db = get_db_with_retry()
         yield db
+    except Exception as e:
+        print(f"Database connection error: {e}")
+        raise HTTPException(status_code=503, detail="Database connection failed")
     finally:
-        db.close()
+        if 'db' in locals():
+            db.close()
 
 
 # Global variables for S3
@@ -100,23 +135,22 @@ def on_startup():
         aws_secret_access_key=S3_SECRET_KEY,
     )
 
-    # Wait for the database to be ready
-    retries = 5
+    # Wait for the database to be ready with improved retry logic
+    retries = 10
     while retries > 0:
         try:
-            # Try to connect to the database
-            db = SessionLocal()
-            db.execute(text("SELECT 1"))  # Use text() function
-            db.close()
+            # Try to connect to the database using retry logic
+            with get_db_session() as db:
+                db.execute(text("SELECT 1"))
             print("Database is ready.")
             break
-        except OperationalError:
-            print("Database not ready, waiting...")
+        except Exception as e:
+            print(f"Database not ready, waiting... (attempt {11-retries}/10): {e}")
             time.sleep(5)
             retries -= 1
 
     if retries == 0:
-        print("Could not connect to the database. Exiting.")
+        print("Could not connect to the database after 10 attempts. Exiting.")
         exit(1)
 
     # Create tables
@@ -244,22 +278,30 @@ async def get_file_content(s3_key: str):
 
 @app.post("/users/", response_model=UserResponse, status_code=201)
 async def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    existing_user = (
-        db.query(User).filter(User.username == user.username).first()
-    )
-    if existing_user:
-        raise HTTPException(
-            status_code=409,  # Conflict
-            detail=(
-                "Username already registered. Please choose a different one."
-            ),
+    try:
+        existing_user = (
+            db.query(User).filter(User.username == user.username).first()
         )
+        if existing_user:
+            raise HTTPException(
+                status_code=409,  # Conflict
+                detail=(
+                    "Username already registered. Please choose a different one."
+                ),
+            )
 
-    db_user = User(**user.model_dump())
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    return db_user
+        db_user = User(**user.model_dump())
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        return db_user
+    except Exception as e:
+        db.rollback()
+        print(f"Error creating user: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Failed to create user. Please try again."
+        )
 
 
 @app.get("/users/", response_model=list[UserResponse])
@@ -268,8 +310,15 @@ async def get_user_by_name(username: str, db: Session = Depends(get_db)):
     Looks up a user by their exact username.
     Returns a list containing the user if found, otherwise an empty list.
     """
-    user = db.query(User).filter(User.username == username).first()
-    return [user] if user else []
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        return [user] if user else []
+    except Exception as e:
+        print(f"Error looking up user: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Failed to look up user. Please try again."
+        )
 
 
 @app.post("/workspaces/", response_model=WorkspaceResponse, status_code=201)

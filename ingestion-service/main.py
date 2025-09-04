@@ -9,49 +9,46 @@ import boto3
 import httpx
 from database import Base
 from database import File as DBFile
-from database import SessionLocal, User, Workspace, engine
+from database import SessionLocal, User, Workspace, engine, get_db_with_retry, get_db_session
 from fastapi import (
     Depends,
     FastAPI,
     HTTPException,
+    Query,
     Response,
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import text  # Import text function
+from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-# --- Improved Pydantic Models ---
-
-
+# --- Pydantic Models ---
 class UserCreate(BaseModel):
     username: str
-
 
 class UserResponse(UserCreate):
     id: int
     model_config = ConfigDict(from_attributes=True)
 
-
 class WorkspaceCreate(BaseModel):
     name: str
     owner_id: int
-
 
 class WorkspaceResponse(WorkspaceCreate):
     id: int
     model_config = ConfigDict(from_attributes=True)
 
+class FileStatusResponse(BaseModel):
+    file_id: UUID
+    status: int
 
 app = FastAPI()
 
-origins = [
-    "http://localhost",
-    "http://localhost:8080",
-    "http://localhost:8090",
-]
+# Get CORS origins from environment variable, with fallback to localhost
+cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost,http://localhost:8080,http://localhost:8090")
+origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,19 +59,49 @@ app.add_middleware(
     expose_headers=["Location", "Content-Location", "location"],
 )
 
-
+@app.middleware("http")
+async def db_connection_middleware(request, call_next):
+    """
+    Middleware to handle database connection issues gracefully.
+    """
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        if "connection" in str(e).lower() or "database" in str(e).lower():
+            print(f"Database connection error in middleware: {e}")
+            return {"detail": "Database connection failed. Please try again.", "status_code": 503}
+        raise e
 @app.get("/health")
 async def health():
     return {"status": "healthy", "service": "ingestion-service"}
 
+@app.get("/health/db")
+async def health_db():
+    """
+    Check database connection health.
+    """
+    try:
+        with get_db_session() as db:
+            db.execute(text("SELECT 1"))
+        return {"status": "healthy", "database": "connected"}
+    except Exception as e:
+        return {"status": "unhealthy", "database": "disconnected", "error": str(e)}
+
 
 def get_db():
-    db = SessionLocal()
+    """
+    Database dependency with retry logic and proper error handling.
+    """
     try:
+        db = get_db_with_retry()
         yield db
+    except Exception as e:
+        print(f"Database connection error: {e}")
+        raise HTTPException(status_code=503, detail="Database connection failed")
     finally:
-        db.close()
-
+        if 'db' in locals():
+            db.close()
 
 # Global variables for S3
 S3_ENDPOINT = None
@@ -82,7 +109,6 @@ S3_ACCESS_KEY = None
 S3_SECRET_KEY = None
 S3_BUCKET = None
 s3 = None
-
 
 @app.on_event("startup")
 def on_startup():
@@ -107,27 +133,29 @@ def on_startup():
         aws_secret_access_key=S3_SECRET_KEY,
     )
 
-    # Wait for the database to be ready
-    retries = 5
+    # Wait for the database to be ready with improved retry logic
+    retries = 10
     while retries > 0:
         try:
-            # Try to connect to the database
-            db = SessionLocal()
-            db.execute(text("SELECT 1"))  # Use text() function
-            db.close()
+            # Try to connect to the database using retry logic
+            with get_db_session() as db:
+                db.execute(text("SELECT 1"))
             print("Database is ready.")
             break
-        except OperationalError:
-            print("Database not ready, waiting...")
+        except Exception as e:
+            print(f"Database not ready, waiting... (attempt {11-retries}/10): {e}")
             time.sleep(5)
             retries -= 1
 
     if retries == 0:
-        print("Could not connect to the database. Exiting.")
+        print("Could not connect to the database after 10 attempts. Exiting.")
         exit(1)
 
-    # Create tables
-    Base.metadata.create_all(bind=engine)
+    # Create tables using shared function
+    print("Creating database tables from ingestion service...")
+    from database import create_tables
+    create_tables()
+    print("Database tables created successfully from ingestion service")
 
     # Ensure S3 bucket exists
     try:
@@ -137,7 +165,6 @@ def on_startup():
         print(f"Creating S3 bucket '{S3_BUCKET}'...")
         s3.create_bucket(Bucket=S3_BUCKET)
         print(f"S3 bucket '{S3_BUCKET}' created successfully.")
-
 
 async def _trigger_downstream(
     md: bool, s3_key: str, db_file_id: str, workspace_id: int, filename: str
@@ -178,7 +205,6 @@ async def _trigger_downstream(
         # best-effort fire-and-forget
         pass
 
-
 async def _bg_upload_and_trigger(
     tmp_path: str, s3_bucket: str, s3_key: str, db_file_id: UUID
 ) -> None:
@@ -217,7 +243,6 @@ async def _bg_upload_and_trigger(
 
 
 @app.post("/uploadfile", status_code=202)
-@app.post("/uploadfile/", status_code=202)
 async def create_upload_file(
     file: UploadFile,
     workspace_id: int,
@@ -321,12 +346,10 @@ async def create_upload_file(
     status_url = f"http://localhost:8010/task/{task_id}/status"
     return Response(status_code=202, headers={"Location": status_url})
 
-
 def _copy_stream_to_path(src_fileobj, dst_path: str) -> None:
     src_fileobj.seek(0)
     with open(dst_path, "wb") as out_f:
         shutil.copyfileobj(src_fileobj, out_f, length=1024 * 1024)
-
 
 @app.get("/file-content/")
 async def get_file_content(s3_key: str):
@@ -342,29 +365,39 @@ async def get_file_content(s3_key: str):
             status_code=500, detail=f"Failed to retrieve file from S3: {e}"
         )
 
-
 # --- User and Workspace Endpoints ---
-
-
 @app.post("/users/", response_model=UserResponse, status_code=201)
 async def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    existing_user = (
-        db.query(User).filter(User.username == user.username).first()
-    )
-    if existing_user:
-        raise HTTPException(
-            status_code=409,  # Conflict
-            detail=(
-                "Username already registered. Please choose a different one."
-            ),
+    try:
+        existing_user = (
+            db.query(User).filter(User.username == user.username).first()
         )
+        if existing_user:
+            raise HTTPException(
+                status_code=409,  # Conflict
+                detail=(
+                    "Username already registered. Please choose a different one."
+                ),
+            )
 
-    db_user = User(**user.model_dump())
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    return db_user
-
+        # Create user with minimal required fields for ingestion service compatibility
+        db_user = User(
+            username=user.username,
+            email=f"{user.username}@example.com",  # Temporary email
+            password_hash="temp",  # Temporary password hash
+            is_active=True
+        )
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        return db_user
+    except Exception as e:
+        db.rollback()
+        print(f"Error creating user: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Failed to create user. Please try again."
+        )
 
 @app.get("/users/", response_model=list[UserResponse])
 async def get_user_by_name(username: str, db: Session = Depends(get_db)):
@@ -372,9 +405,15 @@ async def get_user_by_name(username: str, db: Session = Depends(get_db)):
     Looks up a user by their exact username.
     Returns a list containing the user if found, otherwise an empty list.
     """
-    user = db.query(User).filter(User.username == username).first()
-    return [user] if user else []
-
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        return [user] if user else []
+    except Exception as e:
+        print(f"Error looking up user: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Failed to look up user. Please try again."
+        )
 
 @app.post("/workspaces/", response_model=WorkspaceResponse, status_code=201)
 async def create_workspace(
@@ -393,7 +432,6 @@ async def create_workspace(
     db.refresh(db_workspace)
     return db_workspace
 
-
 @app.get("/workspaces/", response_model=list[WorkspaceResponse])
 async def get_workspace_by_name(
     name: str, owner_id: int, db: Session = Depends(get_db)
@@ -409,6 +447,16 @@ async def get_workspace_by_name(
     )
     return [workspace] if workspace else []
 
+@app.get("/workspaces/by-owner/{owner_id}", response_model=list[WorkspaceResponse])
+async def get_workspaces_by_owner(
+    owner_id: int, db: Session = Depends(get_db)
+):
+    """
+    Get all workspaces for a specific owner.
+    Returns a list of workspaces belonging to the specified owner.
+    """
+    workspaces = db.query(Workspace).filter(Workspace.owner_id == owner_id).all()
+    return workspaces
 
 @app.get("/workspaces/all", response_model=list[WorkspaceResponse])
 async def get_all_workspaces(db: Session = Depends(get_db)):
@@ -418,3 +466,83 @@ async def get_all_workspaces(db: Session = Depends(get_db)):
     """
     workspaces = db.query(Workspace).all()
     return workspaces
+
+# --- File Management Endpoints ---
+@app.get("/files/", response_model=list)
+async def get_files(
+    user_id: int = None,
+    workspace_id: int = None,
+    limit: int = Query(50, ge=1, le=1000),
+    db: Session = Depends(get_db)
+):
+    """
+    Get files by user_id or workspace_id.
+    Returns a list of files matching the criteria.
+    """
+    query = db.query(DBFile)
+    
+    if workspace_id:
+        query = query.filter(DBFile.workspace_id == workspace_id)
+    elif user_id:
+        # Get all workspaces for this user first
+        user_workspaces = db.query(Workspace).filter(Workspace.owner_id == user_id).all()
+        workspace_ids = [w.id for w in user_workspaces]
+        if workspace_ids:
+            query = query.filter(DBFile.workspace_id.in_(workspace_ids))
+        else:
+            return []  # User has no workspaces, so no files
+    
+    files = query.order_by(DBFile.created_at.desc()).limit(limit).all()
+    
+    # Convert to dict format for response
+    return [
+        {
+            "id": str(file.id),
+            "name": file.name,
+            "s3_key": file.s3_key,
+            "workspace_id": file.workspace_id,
+            "status": file.status,
+            "created_at": file.created_at.isoformat() if file.created_at else None,
+        }
+        for file in files
+    ]
+
+@app.delete("/files/{file_id}")
+async def delete_file(file_id: UUID, db: Session = Depends(get_db)):
+    """
+    Delete a file by its ID.
+    """
+    file = db.query(DBFile).filter(DBFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # TODO: Also delete from S3 if needed
+    # if file.s3_key:
+    #     # Delete from S3
+    #     pass
+    
+    db.delete(file)
+    db.commit()
+    return {"message": "File deleted successfully"}
+
+# --- File Status Endpoints ---
+@app.get("/files/{file_id}/status", response_model=FileStatusResponse)
+async def get_file_status(file_id: UUID, db: Session = Depends(get_db)):
+    file = db.query(DBFile).filter(DBFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileStatusResponse(file_id=file.id, status=file.status)
+
+@app.put("/files/{file_id}/status", response_model=FileStatusResponse)
+async def update_file_status(
+    file_id: UUID,
+    status: int = Query(..., ge=1, le=3),
+    db: Session = Depends(get_db),
+):
+    file = db.query(DBFile).filter(DBFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    file.status = status
+    db.commit()
+    db.refresh(file)
+    return FileStatusResponse(file_id=file.id, status=file.status)

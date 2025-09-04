@@ -109,7 +109,7 @@ async function getOrCreateUser(username) {
     
     // First, try to find the user
     const existingUser = await handleRequest(
-        `http://localhost:8000/users/?username=${encodeURIComponent(username)}`,
+        `/api/ingestion/users/?username=${encodeURIComponent(username)}`,
         { method: 'GET' },
         'Failed to check for existing user'
     );
@@ -122,7 +122,7 @@ async function getOrCreateUser(username) {
     // If user doesn't exist, create them
     uploadMessage.textContent = `Creating new user '${username}'...`;
     const newUser = await handleRequest(
-        'http://localhost:8000/users/',
+        '/api/ingestion/users/',
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -145,7 +145,7 @@ async function getOrCreateWorkspace(workspaceName, userId) {
     
     // First, try to find the workspace for this user
     const existingWorkspace = await handleRequest(
-        `http://localhost:8000/workspaces/?owner_id=${userId}&name=${encodeURIComponent(workspaceName)}`,
+        `/api/ingestion/workspaces/?owner_id=${userId}&name=${encodeURIComponent(workspaceName)}`,
         { method: 'GET' },
         'Failed to check for existing workspace'
     );
@@ -158,7 +158,7 @@ async function getOrCreateWorkspace(workspaceName, userId) {
     // If workspace doesn't exist, create it
     uploadMessage.textContent = `Creating new workspace '${workspaceName}'...`;
     const newWorkspace = await handleRequest(
-        'http://localhost:8000/workspaces/',
+        '/api/ingestion/workspaces/',
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -182,7 +182,7 @@ async function findUser(username) {
     workspaceMessage.className = '';
     
     const existingUser = await handleRequest(
-        `http://localhost:8000/users/?username=${encodeURIComponent(username)}`,
+        `/api/ingestion/users/?username=${encodeURIComponent(username)}`,
         { method: 'GET' },
         'Failed to find user'
     );
@@ -201,7 +201,7 @@ async function findWorkspace(workspaceName, userId) {
     workspaceMessage.textContent = `Looking for workspace '${workspaceName}'...`;
     
     const existingWorkspace = await handleRequest(
-        `http://localhost:8000/workspaces/?owner_id=${userId}&name=${encodeURIComponent(workspaceName)}`,
+        `/api/ingestion/workspaces/?owner_id=${userId}&name=${encodeURIComponent(workspaceName)}`,
         { method: 'GET' },
         'Failed to find workspace'
     );
@@ -282,7 +282,7 @@ async function toggleContent(event) {
     // Otherwise, fetch the content
     button.textContent = 'Loading...';
     const data = await handleRequest(
-        `http://localhost:8000/file-content/?s3_key=${encodeURIComponent(s3_key)}`,
+        `/api/ingestion/file-content/?s3_key=${encodeURIComponent(s3_key)}`,
         { method: 'GET' },
         'Failed to fetch file content'
     );

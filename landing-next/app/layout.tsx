@@ -1,6 +1,6 @@
 import './globals.css';
 import { ReactNode } from 'react';
-import { SiteHeader } from './components/SiteHeader';
+import { ConditionalSiteHeader } from './components/ConditionalSiteHeader';
 
 export const metadata = {
   title: 'QuickResolve — AI for Customer Support',
@@ -11,7 +11,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body className="bg-gradient-to-br from-indigo-500 to-violet-600 text-ink/90">
-        <SiteHeader />
+        <ConditionalSiteHeader />
         {children}
       </body>
     </html>

@@ -52,6 +52,16 @@ except ValueError:
 EMBED_SEM = asyncio.Semaphore(MAX_EMBEDDING_CONCURRENT_TASKS)
 
 
+def _canonicalize_steps(steps: List[PipelineStep]) -> List[PipelineStep]:
+    """Return steps ordered as
+    parse-document -> chunk -> redact -> embed (others last)."""
+    priority = {"parse-document": 0, "chunk": 1, "redact": 2, "embed": 3}
+    # Stable sort ensures unknown steps keep relative order after known ones
+    return sorted(
+        steps, key=lambda s: priority.get((s.name or "").strip().lower(), 4)
+    )
+
+
 @app.get("/health")
 async def health():
     return {"status": "healthy", "service": "index-document-service"}
@@ -77,15 +87,21 @@ async def _run_pipeline(definition: PipelineDefinition):
         "workspace_id": workspace_id,
         "original_filename": definition.original_filename,
     }
+    # Artifact context persists outputs needed by later steps
+    artifact_ctx: Dict[str, Any] = {}
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             prev_output: Dict[str, Any] | None = None
-            for step in definition.steps:
+            # Reorder steps to canonical order
+            ordered_steps = _canonicalize_steps(definition.steps)
+            for step in ordered_steps:
                 name = (step.name or "").strip().lower()
                 if name == "embed":
                     # Fan-out per chunk; then finalize this index-document task
-                    chunks = (prev_output or {}).get("chunks") or []
+                    chunks = (prev_output or {}).get(
+                        "chunks"
+                    ) or artifact_ctx.get("chunks", [])
                     if not isinstance(chunks, list):
                         chunks = []
                     try:
@@ -103,6 +119,25 @@ async def _run_pipeline(definition: PipelineDefinition):
                             status={"message": "Document embedding failed"},
                         )
                         return
+                # Run redact as a fan-out over chunks with same input as embed
+                if name == "redact":
+                    chunks = (prev_output or {}).get(
+                        "chunks"
+                    ) or artifact_ctx.get("chunks", [])
+                    if not isinstance(chunks, list):
+                        chunks = []
+                    try:
+                        await _run_redact_fanout(client, chunks, workspace_id)
+                        # keep prev_output pointing to chunks for next steps
+                        prev_output = {"chunks": chunks}
+                        continue
+                    except Exception:
+                        await _update_task_status(
+                            definition.task_id,
+                            status_code=3,
+                            status={"message": "Document redaction failed"},
+                        )
+                        return
 
                 # Regular single task step
                 tries = 0
@@ -114,8 +149,33 @@ async def _run_pipeline(definition: PipelineDefinition):
                             name=name,
                             workspace_id=workspace_id,
                             root_ctx=root_ctx,
+                            artifact_ctx=artifact_ctx,
                             prev_output=prev_output,
                         )
+                        # Persist key artifacts
+                        # for later steps regardless of order
+                        if name == "parse-document":
+                            if isinstance(prev_output, dict):
+                                if prev_output.get("parsed_s3_key"):
+                                    artifact_ctx["parsed_s3_key"] = (
+                                        prev_output["parsed_s3_key"]
+                                    )
+                                if prev_output.get("document_parser_version"):
+                                    artifact_ctx["document_parser_version"] = (
+                                        prev_output["document_parser_version"]
+                                    )
+                        elif name == "redact":
+                            if isinstance(
+                                prev_output, dict
+                            ) and prev_output.get("redacted_s3_key"):
+                                artifact_ctx["redacted_s3_key"] = prev_output[
+                                    "redacted_s3_key"
+                                ]
+                        elif name == "chunk":
+                            if isinstance(
+                                prev_output, dict
+                            ) and prev_output.get("chunks"):
+                                artifact_ctx["chunks"] = prev_output["chunks"]
                         break
                     except Exception:
                         if tries >= 3:
@@ -145,6 +205,7 @@ async def _create_and_wait_task(
     name: str,
     workspace_id: int,
     root_ctx: Dict[str, Any],
+    artifact_ctx: Dict[str, Any],
     prev_output: Dict[str, Any] | None,
 ) -> Dict[str, Any]:
     # Build task input depending on step
@@ -158,26 +219,34 @@ async def _create_and_wait_task(
         }
     elif name == "redact":
         step_input = {
-            "s3_key": (prev_output or {}).get("parsed_s3_key")
-            or root_ctx.get("s3_key"),
-            "file_id": root_ctx["file_id"],
-            "workspace_id": workspace_id,
-            "original_filename": root_ctx["original_filename"],
-            "document_parser_version": (prev_output or {}).get(
-                "document_parser_version"
-            ),
-        }
-    elif name == "chunk":
-        step_input = {
-            "s3_key": (prev_output or {}).get("redacted_s3_key")
+            # Prefer parsed artifact
+            # for redaction even if we reordered after chunk
+            "s3_key": artifact_ctx.get("parsed_s3_key")
             or (prev_output or {}).get("parsed_s3_key")
             or root_ctx.get("s3_key"),
             "file_id": root_ctx["file_id"],
             "workspace_id": workspace_id,
             "original_filename": root_ctx["original_filename"],
-            "document_parser_version": (prev_output or {}).get(
+            "document_parser_version": artifact_ctx.get(
                 "document_parser_version"
-            ),
+            )
+            or (prev_output or {}).get("document_parser_version"),
+        }
+    elif name == "chunk":
+        step_input = {
+            # Use redacted if available, else parsed, else original
+            "s3_key": artifact_ctx.get("redacted_s3_key")
+            or (prev_output or {}).get("redacted_s3_key")
+            or artifact_ctx.get("parsed_s3_key")
+            or (prev_output or {}).get("parsed_s3_key")
+            or root_ctx.get("s3_key"),
+            "file_id": root_ctx["file_id"],
+            "workspace_id": workspace_id,
+            "original_filename": root_ctx["original_filename"],
+            "document_parser_version": artifact_ctx.get(
+                "document_parser_version"
+            )
+            or (prev_output or {}).get("document_parser_version"),
         }
     else:
         # Default passthrough if an unknown step shows up
@@ -211,6 +280,43 @@ async def _create_and_wait_task(
             return data.get("output") or {}
         if code == 3:
             raise RuntimeError(f"Task {name} {task_id} failed")
+
+
+async def _run_redact_fanout(
+    client: httpx.AsyncClient, chunks: List[Dict[str, Any]], workspace_id: int
+):
+    # Run multiple redact tasks (pass-through) and wait for all to complete
+    sem = EMBED_SEM
+
+    async def _one(chunk: Dict[str, Any]):
+        async with sem:
+            body = {
+                "name": "redact",
+                "input": {
+                    "chunk_id": chunk.get("chunk_id") or chunk.get("id"),
+                    "workspace_id": workspace_id,
+                },
+                "workspace_id": workspace_id,
+            }
+            r = await client.post(f"{TASK_SERVICE_URL}/task", json=body)
+            r.raise_for_status()
+            task_id = r.json().get("id")
+            if not task_id:
+                raise RuntimeError("Task creation did not return id")
+            while True:
+                await asyncio.sleep(1)
+                s = await client.get(f"{TASK_SERVICE_URL}/task/{task_id}")
+                if s.status_code != 200:
+                    continue
+                data = s.json()
+                code = int(data.get("status_code") or 0)
+                if code == 2:
+                    return
+                if code == 3:
+                    raise RuntimeError("redact failed")
+
+    tasks = [asyncio.create_task(_one(chunk)) for chunk in chunks]
+    await asyncio.gather(*tasks)
 
 
 async def _run_embed_fanout(

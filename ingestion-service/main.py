@@ -1,8 +1,8 @@
 import asyncio
 import os
-import shutil
 import tempfile
 import time
+from typing import Optional
 from uuid import UUID
 
 import boto3
@@ -22,8 +22,6 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text  # Import text function
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
-
-# --- Improved Pydantic Models ---
 
 
 class UserCreate(BaseModel):
@@ -83,6 +81,17 @@ S3_SECRET_KEY = None
 S3_BUCKET = None
 s3 = None
 
+# Upload size limit (bytes)
+try:
+    _mb = os.getenv("MAX_UPLOAD_MB", "4")
+    MAX_UPLOAD_BYTES = 0
+    if _mb is not None and str(_mb).strip() != "":
+        MAX_UPLOAD_BYTES = int(float(_mb) * 1024 * 1024)
+    else:
+        MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "0") or "0")
+except ValueError:
+    MAX_UPLOAD_BYTES = 0
+
 
 @app.on_event("startup")
 def on_startup():
@@ -137,46 +146,6 @@ def on_startup():
         print(f"Creating S3 bucket '{S3_BUCKET}'...")
         s3.create_bucket(Bucket=S3_BUCKET)
         print(f"S3 bucket '{S3_BUCKET}' created successfully.")
-
-
-async def _trigger_downstream(
-    md: bool, s3_key: str, db_file_id: str, workspace_id: int, filename: str
-):
-    try:
-        task_service_url = os.getenv(
-            "TASK_SERVICE_URL", "http://task-service:8010"
-        )
-        # Always create the index-document pipeline task with full definition
-        steps = []
-        if not md:
-            steps.append({"name": "parse-document"})
-        steps.extend(
-            [
-                {"name": "redact"},
-                {"name": "chunk"},
-                {"name": "embed"},
-            ]
-        )
-        index_definition = {
-            "description": f"Indexing document {db_file_id}",
-            "s3_key": s3_key,
-            "file_id": db_file_id,
-            "workspace_id": workspace_id,
-            "original_filename": filename,
-            "steps": steps,
-        }
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            await client.post(
-                f"{task_service_url}/task",
-                json={
-                    "name": "index-document",
-                    "input": index_definition,
-                    "workspace_id": workspace_id,
-                },
-            )
-    except Exception:
-        # best-effort fire-and-forget
-        pass
 
 
 async def _bg_upload_and_trigger(
@@ -251,12 +220,22 @@ async def create_upload_file(
         tmp = tempfile.NamedTemporaryFile(delete=False)
         tmp_path = tmp.name
         tmp.close()
-        # Copy stream to disk off the event loop
+        # Copy stream to disk off the event loop with size limit
         await asyncio.to_thread(
             _copy_stream_to_path,
             file.file,
             tmp_path,
+            MAX_UPLOAD_BYTES,
         )
+    except HTTPException:
+        # Propagate 413 directly
+        try:
+            db_file.status = 3
+            db.commit()
+            db.refresh(db_file)
+        except Exception:
+            pass
+        raise
     except Exception as e:
         # Mark error and fail fast
         try:
@@ -285,8 +264,8 @@ async def create_upload_file(
             steps.append({"name": "parse-document"})
         steps.extend(
             [
-                {"name": "redact"},
                 {"name": "chunk"},
+                {"name": "redact"},
                 {"name": "embed"},
             ]
         )
@@ -322,10 +301,21 @@ async def create_upload_file(
     return Response(status_code=202, headers={"Location": status_url})
 
 
-def _copy_stream_to_path(src_fileobj, dst_path: str) -> None:
+def _copy_stream_to_path(
+    src_fileobj, dst_path: str, max_bytes: Optional[int] = None
+) -> None:
     src_fileobj.seek(0)
+    total = 0
     with open(dst_path, "wb") as out_f:
-        shutil.copyfileobj(src_fileobj, out_f, length=1024 * 1024)
+        while True:
+            chunk = src_fileobj.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if max_bytes and max_bytes > 0 and total > max_bytes:
+                # Stop writing and signal too large
+                raise HTTPException(status_code=413, detail="File too large")
+            out_f.write(chunk)
 
 
 @app.get("/file-content/")

@@ -195,7 +195,9 @@ services:
     restart: unless-stopped
 
   index-document-service:
-    build: ./index-document-service
+    build:
+      context: .
+      dockerfile: index-document-service/Dockerfile
     ports:
       - "8011:8011"
     environment:

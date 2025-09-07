@@ -1,22 +1,33 @@
+"""
+Task Manager
+`TaskManager` wrapper that tracks available
+slots and runs tasks asynchronously while delegating broker
+calls to `TaskBrokerClient` (no background loop).
+"""
+
 import asyncio
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable
 
 from task_broker_client import TaskBrokerClient
 
 
 class TaskManager:
     """
-    Tracks available slots and orchestrates asynchronous task execution without a background loop.
-    Wraps TaskBrokerClient for broker interactions and never stops during service lifetime.
+    Tracks available slots and orchestrates asynchronous
+    task execution without a background loop.
+    Wraps TaskBrokerClient for broker interactions
+    and never stops during service lifetime.
     """
 
-    def __init__(self, broker: TaskBrokerClient, *, max_concurrent: int) -> None:
+    def __init__(
+        self, broker: TaskBrokerClient, *, max_concurrent: int
+    ) -> None:
         self.broker = broker
         self.max_concurrent = max_concurrent
         self._inflight: set[str] = set()
         self._available_slots = max_concurrent
-        # Advertise one slot immediately (non-blocking), then decrement token budget
-        asyncio.create_task(self._ready())
+        # Initial readiness will be triggered
+        # explicitly via start() on app startup
 
     def inflight_count(self) -> int:
         return len(self._inflight)
@@ -24,17 +35,20 @@ class TaskManager:
     def capacity(self) -> int:
         return max(0, self.max_concurrent - self.inflight_count())
 
-    async def _ready(self) -> None:
+    async def start(self) -> None:
         if self._available_slots <= 0:
             return
         try:
             await self.broker.ready()
             self._available_slots -= 1
         except Exception:
-            # swallow and rely on future calls (e.g., on completion) to retry readiness
+            # swallow and rely on future calls (e.g., on completion)
+            # to retry readiness
             pass
 
-    async def execute_task(self, task_payload: dict, work: Callable[[dict], Awaitable[dict]]) -> dict:
+    async def execute_task(
+        self, task_payload: dict, work: Callable[[dict], Awaitable[dict]]
+    ) -> dict:
         """
         Execute a single task asynchronously using provided `work` coroutine.
         Manages slot tracking and ACK/NACK/FAIL.
@@ -45,24 +59,29 @@ class TaskManager:
             await self.broker.nack(task_id)
             return {"accepted": False, "reason": "no-capacity"}
         self._inflight.add(task_id)
-        # If we still have unused tokens after taking this task, advertise another slot
+        # If we still have unused tokens after taking this task,
+        # advertise another slot
         if self._available_slots > 0:
-            asyncio.create_task(self._ready())
+            asyncio.create_task(self.start())
         try:
             output = await work(task_payload)
             await self.broker.ack(task_id, output=output)
         except Exception as e:
-            # Optionally distinguish RecoverableError; for now, fail on unexpected exceptions
+            # Optionally distinguish RecoverableError; for now,
+            # fail on unexpected exceptions
             await self.broker.fail(task_id, status={"error": str(e)})
         finally:
             self._inflight.discard(task_id)
             # Free a slot and advertise readiness again
-            self._available_slots = min(self._available_slots + 1, self.max_concurrent - self.inflight_count())
-            asyncio.create_task(self._ready())
+            self._available_slots = min(
+                self._available_slots + 1,
+                self.max_concurrent - self.inflight_count(),
+            )
+            asyncio.create_task(self.start())
         return {"accepted": True}
 
     async def stop(self) -> None:
         try:
             await self.broker.deregister()
         finally:
-            await self.broker.aclose() 
+            await self.broker.aclose()

@@ -10,13 +10,14 @@ import os
 from typing import List, Optional
 
 import boto3
-import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from src.chunking_strategies.markdown_paragraph_sentence import (
     MarkdownParagraphSentenceChunkingStrategy,
 )
+from task_broker_client import TaskBrokerClient
+from task_manager import TaskManager
 
 # App setup
 app = FastAPI(
@@ -32,11 +33,13 @@ app.add_middleware(
 )
 
 # Environment
-TASK_SERVICE_URL = os.getenv("TASK_SERVICE_URL", "http://task-service:8010")
 S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://minio:9000")
 S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
 S3_BUCKET = os.getenv("S3_BUCKET")
+SERVICE_BASE = os.getenv(
+    "CHUNKING_SERVICE_URL", "http://chunking-service:8006"
+)
 
 # Clients
 s3 = boto3.client(
@@ -44,6 +47,16 @@ s3 = boto3.client(
     endpoint_url=S3_ENDPOINT,
     aws_access_key_id=S3_ACCESS_KEY,
     aws_secret_access_key=S3_SECRET_KEY,
+)
+
+# Task broker client/manager for consuming chunk tasks
+broker = TaskBrokerClient(
+    endpoint_url=f"{SERVICE_BASE}/chunk",
+    health_url=f"{SERVICE_BASE}/health",
+    topic="chunk",
+)
+manager = TaskManager(
+    broker, max_concurrent=int(os.getenv("CHUNK_MAX_CONCURRENT", "5"))
 )
 
 
@@ -59,6 +72,16 @@ class ChunkRequest(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "healthy", "service": "chunking"}
+
+
+@app.on_event("startup")
+async def on_startup():
+    await manager.start()
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await manager.stop()
 
 
 async def _s3_get_text(bucket: str, key: str) -> str:
@@ -77,59 +100,45 @@ async def _s3_put_json(bucket: str, key: str, data_bytes: bytes) -> None:
     )
 
 
-async def _update_task_status(task_id: Optional[str], **kwargs):
-    if not task_id:
-        return
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.put(f"{TASK_SERVICE_URL}/task/{task_id}", json=kwargs)
-    except Exception:
-        pass
+async def _process_chunk(req: ChunkRequest) -> dict:
+    # 1) Download markdown from S3
+    markdown_text = await _s3_get_text(S3_BUCKET, req.s3_key)
 
+    # 2) Chunk using the strategy
+    chunker = MarkdownParagraphSentenceChunkingStrategy()
+    all_chunks = chunker.chunk(
+        text=markdown_text,
+        file_id=req.file_id,
+        workspace_id=req.workspace_id,
+        s3_key=req.s3_key,
+        document_parser_version=req.document_parser_version,
+    )
 
-async def _process_chunk(req: ChunkRequest):
-    try:
-        await _update_task_status(
-            req.task_id, status_code=1, status={"message": "running"}
-        )
-        # 1) Download markdown from S3
-        markdown_text = await _s3_get_text(S3_BUCKET, req.s3_key)
+    # 3) Save chunk JSONs to S3
+    put_tasks: List[asyncio.Task] = []
+    for d in all_chunks:
+        key = f"{req.workspace_id}/payload/{d['chunk_id']}.json"
+        payload_bytes = json.dumps(d, ensure_ascii=False).encode("utf-8")
+        put_tasks.append(_s3_put_json(S3_BUCKET, key, payload_bytes))
+    if put_tasks:
+        await asyncio.gather(*put_tasks)
 
-        # 2) Chunk using the strategy
-        chunker = MarkdownParagraphSentenceChunkingStrategy()
-        all_chunks = chunker.chunk(
-            text=markdown_text,
-            file_id=req.file_id,
-            workspace_id=req.workspace_id,
-            s3_key=req.s3_key,
-            document_parser_version=req.document_parser_version,
-        )
-
-        # 3) Save chunk JSONs to S3
-        put_tasks: List[asyncio.Task] = []
-        for d in all_chunks:
-            key = f"{req.workspace_id}/payload/{d['chunk_id']}.json"
-            payload_bytes = json.dumps(d, ensure_ascii=False).encode("utf-8")
-            put_tasks.append(_s3_put_json(S3_BUCKET, key, payload_bytes))
-        if put_tasks:
-            await asyncio.gather(*put_tasks)
-
-        # 4) Mark task done with chunks list in output
-        await _update_task_status(
-            req.task_id,
-            status_code=2,
-            output={"chunks": all_chunks},
-        )
-    except Exception as e:
-        await _update_task_status(
-            req.task_id,
-            status_code=3,
-            status={"message": f"chunking failed: {e}"},
-        )
+    # Return output for ACK
+    return {"chunks": all_chunks}
 
 
 @app.post("/chunk")
-async def chunk(req: ChunkRequest):
-    # Fire-and-forget background processing
-    asyncio.create_task(_process_chunk(req))
-    return {"accepted": True}
+async def consume(input: dict):
+    async def work(payload: dict) -> dict:
+        req = ChunkRequest(
+            s3_key=payload["s3_key"],
+            file_id=payload["file_id"],
+            workspace_id=payload["workspace_id"],
+            original_filename=payload.get("original_filename"),
+            document_parser_version=payload.get("document_parser_version"),
+            task_id=payload.get("task_id"),
+        )
+
+        return await _process_chunk(req)
+
+    return await manager.execute_task(input, work)

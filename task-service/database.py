@@ -3,19 +3,20 @@ import time
 from uuid import uuid4
 
 from sqlalchemy import (
+    JSON,
+    BigInteger,
     Column,
+    Index,
     Integer,
     SmallInteger,
     String,
-    BigInteger,
-    JSON,
     create_engine,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.exc import OperationalError
-from sqlalchemy import text
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./task_service.db")
 
@@ -45,22 +46,56 @@ def _now_seconds() -> int:
 class Task(Base):
     __tablename__ = "tasks"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True, default=uuid4)
-    creation_timestamp = Column(BigInteger, nullable=False, default=_now_seconds)
-    modification_timestamp = Column(BigInteger, nullable=False, default=_now_seconds)
+    id = Column(
+        UUID(as_uuid=True), primary_key=True, index=True, default=uuid4
+    )
+    creation_timestamp = Column(
+        BigInteger, nullable=False, default=_now_seconds
+    )
+    modification_timestamp = Column(
+        BigInteger, nullable=False, default=_now_seconds
+    )
     name = Column(String, nullable=False)
-    scheduled_start_timestamp = Column(BigInteger, nullable=True, default=None)
+    scheduled_start_timestamp = Column(
+        BigInteger, nullable=False, default=_now_seconds
+    )
     status_code = Column(SmallInteger, nullable=False, default=0)
     status = Column(JSON, nullable=False, default=dict)
     progress_percentage = Column(SmallInteger, nullable=False, default=0)
     input = Column(JSON, nullable=False, default=dict)
+    state = Column(JSON, nullable=False, default=dict)
     output = Column(JSON, nullable=False, default=dict)
     start_timestamp = Column(BigInteger, nullable=True, default=None)
     end_timestamp = Column(BigInteger, nullable=True, default=None)
     workspace_id = Column(Integer, nullable=False)
 
+    __table_args__ = (
+        Index("idx_tasks_status", "status_code"),
+        Index(
+            "idx_tasks_fifo",
+            "name",
+            "status_code",
+            "scheduled_start_timestamp",
+        ),
+    )
+
+
+class Consumer(Base):
+    __tablename__ = "consumers"
+
+    endpoint_url = Column(String, primary_key=True, nullable=False, index=True)
+    health_url = Column(String, nullable=False)
+    topic = Column(String, nullable=False)
+    is_ready = Column(SmallInteger, nullable=False, default=0)
+
+    __table_args__ = (
+        Index("idx_consumers_topic_ready", "topic", "is_ready"),
+        Index("idx_consumers_endpoint", "endpoint_url"),
+    )
+
 
 # Helper used by main on startup
+
 
 def wait_for_db_and_create_tables():
     if engine is None:
@@ -78,4 +113,4 @@ def wait_for_db_and_create_tables():
     if retries == 0:
         raise RuntimeError("Could not connect to the database")
 
-    Base.metadata.create_all(bind=engine) 
+    Base.metadata.create_all(bind=engine)

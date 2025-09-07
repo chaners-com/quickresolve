@@ -51,8 +51,8 @@ RUN set -eux; \
         pip install python-docx; \
     fi
 
-COPY main.py .
-COPY src ./src
+COPY document-parsing-service/main.py .
+COPY document-parsing-service/src ./src
 
 EXPOSE 8005
 

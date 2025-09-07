@@ -10,11 +10,12 @@ import os
 import time
 
 import boto3
-import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from src.parsers.registry import PARSER_REGISTRY, get_parser_class
+from task_broker_client import TaskBrokerClient
+from task_manager import TaskManager
 
 app = FastAPI(
     title="Document Parsing Service",
@@ -38,13 +39,26 @@ S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
 S3_BUCKET = os.getenv("S3_BUCKET")
 PUBLIC_S3_ENDPOINT = os.getenv("PUBLIC_S3_ENDPOINT")
 
-TASK_SERVICE_URL = os.getenv("TASK_SERVICE_URL", "http://task-service:8010")
+SERVICE_BASE = os.getenv(
+    "DOCUMENT_PARSING_SERVICE_URL", "http://document-parsing-service:8005"
+)
 
 s3_client = None
 
+# Task broker client/manager for consuming parse-document tasks
+broker = TaskBrokerClient(
+    endpoint_url=f"{SERVICE_BASE}/parse",
+    health_url=f"{SERVICE_BASE}/health",
+    topic="parse-document",
+)
+
+manager = TaskManager(
+    broker, max_concurrent=int(os.getenv("PARSE_MAX_CONCURRENT", "1"))
+)
+
 
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
     global s3_client
     s3_client = boto3.client(
         "s3",
@@ -52,6 +66,12 @@ def on_startup():
         aws_access_key_id=S3_ACCESS_KEY,
         aws_secret_access_key=S3_SECRET_KEY,
     )
+    await manager.start()
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await manager.stop()
 
 
 class ParseRequest(BaseModel):
@@ -60,22 +80,6 @@ class ParseRequest(BaseModel):
     workspace_id: int
     original_filename: str
     task_id: str | None = None
-
-
-class ParseAck(BaseModel):
-    accepted: bool
-    workspace_id: int
-    file_id: str
-
-
-async def _update_task_status(task_id: str, **kwargs):
-    if not task_id:
-        return
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.put(f"{TASK_SERVICE_URL}/task/{task_id}", json=kwargs)
-    except Exception:
-        pass
 
 
 async def _download_from_s3(key: str) -> tuple[bytes, str]:
@@ -98,125 +102,88 @@ async def _upload_to_s3(
     await asyncio.to_thread(_put)
 
 
-async def _notify_running(task_id: str | None, step: int, message: str):
-    await _update_task_status(
-        task_id,
-        status_code=1,
-        status={"message": message, "step": step},
+async def _run_parse_job(request: ParseRequest) -> dict:
+    started = time.time()
+    print(
+        f"""Parsing document {request.s3_key}
+             for file {request.file_id} in workspace {request.workspace_id}"""
+    )
+    # Download original content (also capture content-type if set)
+    content_bytes, s3_content_type = await _download_from_s3(request.s3_key)
+
+    # Determine extension
+    # TODO: do not only rely on the extension, also check the content type.
+    ext = request.original_filename.lower().strip().split(".")[-1]
+
+    # Select parser from registry by extension and content type,
+    # honoring env overrides
+    parser_cls = get_parser_class(ext, s3_content_type) or PARSER_REGISTRY.get(
+        ext
+    )
+    if not parser_cls:
+        raise ValueError(f"unsupported file type: .{ext}")
+
+    # Build context for parser
+    parse_context = {
+        "workspace_id": request.workspace_id,
+        "file_id": request.file_id,
+        "public_s3_endpoint": PUBLIC_S3_ENDPOINT,
+    }
+
+    # Parse using the parser class
+    document_parser_version = getattr(parser_cls, "VERSION", "unknown")
+    parser_result = parser_cls.parse(content_bytes, parse_context)
+    if asyncio.iscoroutine(parser_result):
+        parsed_md, images = await parser_result
+    else:
+        parsed_md, images = parser_result
+
+    # Minimal validation
+    if not parsed_md or len(parsed_md.strip()) < int(
+        os.getenv("MIN_OUTPUT_CHARS", "20")
+    ):
+        raise ValueError("validation failed")
+
+    # Upload images (if any) to S3 under {workspace}/parsed/{file}/images
+    image_base = f"{request.workspace_id}/parsed/{request.file_id}/images"
+    for img in images or []:
+        ext = (img.get("ext") or "png").lstrip(".")
+        idx = img.get("index") or 0
+        key = f"{image_base}/image-{idx}.{ext}"
+        await _upload_to_s3(
+            key, img.get("content", b""), content_type=f"image/{ext}"
+        )
+
+    parsed_bytes = parsed_md.encode("utf-8")
+    parsed_s3_key = f"{request.workspace_id}/parsed/{request.file_id}.md"
+
+    # Upload parsed markdown
+    await _upload_to_s3(
+        parsed_s3_key, parsed_bytes, content_type="text/markdown"
     )
 
-
-async def _run_parse_job(request: ParseRequest) -> None:
-    started = time.time()
-    try:
-        print(
-            f"""Parsing document {request.s3_key}
-             for file {request.file_id} in workspace {request.workspace_id}"""
-        )
-        # Download original content (also capture content-type if set)
-        content_bytes, s3_content_type = await _download_from_s3(
-            request.s3_key
-        )
-
-        # Determine extension
-        # TODO: do not only rely on the extension, also check the content type.
-        ext = request.original_filename.lower().strip().split(".")[-1]
-
-        # Select parser from registry by extension and content type,
-        # honoring env overrides
-        parser_cls = get_parser_class(
-            ext, s3_content_type
-        ) or PARSER_REGISTRY.get(ext)
-        if not parser_cls:
-            await _update_task_status(
-                request.task_id,
-                status_code=3,
-                status={"message": "unsupported file type"},
-            )
-            print(f"Unsupported file type: .{ext}")
-            return
-
-        # Build context for parser
-        parse_context = {
-            "workspace_id": request.workspace_id,
-            "file_id": request.file_id,
-            "public_s3_endpoint": PUBLIC_S3_ENDPOINT,
-        }
-
-        # Parse using the parser class
-        document_parser_version = getattr(parser_cls, "VERSION", "unknown")
-        parser_result = parser_cls.parse(content_bytes, parse_context)
-        if asyncio.iscoroutine(parser_result):
-            parsed_md, images = await parser_result
-        else:
-            parsed_md, images = parser_result
-
-        # Minimal validation
-        if not parsed_md or len(parsed_md.strip()) < int(
-            os.getenv("MIN_OUTPUT_CHARS", "20")
-        ):
-            await _update_task_status(
-                request.task_id,
-                status_code=3,
-                status={"message": "validation failed"},
-            )
-            print(
-                f"""Validation failed for file {request.file_id}:
-                 insufficient output"""
-            )
-            return
-
-        # Upload images (if any) to S3 under {workspace}/parsed/{file}/images
-        image_base = f"{request.workspace_id}/parsed/{request.file_id}/images"
-        for img in images or []:
-            ext = (img.get("ext") or "png").lstrip(".")
-            idx = img.get("index") or 0
-            key = f"{image_base}/image-{idx}.{ext}"
-            await _upload_to_s3(
-                key, img.get("content", b""), content_type=f"image/{ext}"
-            )
-
-        parsed_bytes = parsed_md.encode("utf-8")
-        parsed_s3_key = f"{request.workspace_id}/parsed/{request.file_id}.md"
-
-        # Upload parsed markdown
-        await _upload_to_s3(
-            parsed_s3_key, parsed_bytes, content_type="text/markdown"
-        )
-
-        # Update task output; orchestrator will decide next step
-        await _update_task_status(
-            request.task_id,
-            status_code=2,
-            output={
-                "parsed_s3_key": parsed_s3_key,
-                "document_parser_version": document_parser_version,
-                "images": [
-                    {
-                        "key": (
-                            f"{request.workspace_id}/parsed/"
-                            f"{request.file_id}/images/"
-                            f"image-{(img.get('index') or 0)}."
-                            f"{(img.get('ext') or 'png').lstrip('.')}"
-                        )
-                    }
-                    for img in (images or [])
-                ],
-            },
-        )
-
-        duration = time.time() - started
-        print(
-            f"""Parse job completed
+    duration = time.time() - started
+    print(
+        f"""Parse job completed
              for file {request.file_id} in {duration:.3f}s"""
-        )
-    except Exception as e:
-        await _update_task_status(
-            request.task_id,
-            status_code=3,
-            status={"message": f"Parse failed: {e}"},
-        )
-        print(f"Parse job failed for file {request.file_id}: {e}")
+    )
+
+    # Return output
+    return {
+        "parsed_s3_key": parsed_s3_key,
+        "document_parser_version": document_parser_version,
+        "images": [
+            {
+                "key": (
+                    f"{request.workspace_id}/parsed/"
+                    f"{request.file_id}/images/"
+                    f"image-{(img.get('index') or 0)}."
+                    f"{(img.get('ext') or 'png').lstrip('.')}"
+                )
+            }
+            for img in (images or [])
+        ],
+    }
 
 
 @app.get("/health")
@@ -243,11 +210,15 @@ async def get_supported_types():
 
 
 @app.post("/parse")
-async def parse_document(request: ParseRequest):
-    # Enqueue background parse job and return immediate ack
-    asyncio.create_task(_run_parse_job(request))
-    return ParseAck(
-        accepted=True,
-        workspace_id=request.workspace_id,
-        file_id=request.file_id,
-    )
+async def consume(input: dict):
+    async def work(payload: dict) -> dict:
+        req = ParseRequest(
+            s3_key=payload["s3_key"],
+            file_id=payload["file_id"],
+            workspace_id=payload["workspace_id"],
+            original_filename=payload["original_filename"],
+            task_id=payload.get("task_id"),
+        )
+        return await _run_parse_job(req)
+
+    return await manager.execute_task(input, work)

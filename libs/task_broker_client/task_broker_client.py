@@ -1,3 +1,10 @@
+"""
+Task Broker Client
+Minimal API to announce readiness for one task
+at a time (single-slot), acknowledge success or failure,
+and deregister on shutdown.
+"""
+
 import os
 from typing import Optional
 
@@ -15,7 +22,9 @@ class TaskBrokerClient:
         topic: str,
         base_url: Optional[str] = None,
     ) -> None:
-        self.base_url = base_url or os.getenv("TASK_BROKER_URL", "http://task-service:8010")
+        self.base_url = base_url or os.getenv(
+            "TASK_BROKER_URL", "http://task-service:8010"
+        )
         self.endpoint_url = endpoint_url
         self.health_url = health_url
         self.topic = topic
@@ -42,29 +51,44 @@ class TaskBrokerClient:
         payload = {"status_code": 2}
         if output is not None:
             payload["output"] = output
-        r = await self._client.put(f"{self.base_url}/task/{task_id}", json=payload)
+        r = await self._client.put(
+            f"{self.base_url}/task/{task_id}", json=payload
+        )
         r.raise_for_status()
 
     async def nack(self, task_id: str) -> None:
         payload = {"status_code": 0}
-        r = await self._client.put(f"{self.base_url}/task/{task_id}", json=payload)
+        r = await self._client.put(
+            f"{self.base_url}/task/{task_id}", json=payload
+        )
         r.raise_for_status()
 
     async def fail(self, task_id: str, status: Optional[dict] = None) -> None:
         payload = {"status_code": 3}
         if status is not None:
             payload["status"] = status
-        r = await self._client.put(f"{self.base_url}/task/{task_id}", json=payload)
+        r = await self._client.put(
+            f"{self.base_url}/task/{task_id}", json=payload
+        )
         r.raise_for_status()
 
     async def update_state(self, task_id: str, state: dict) -> None:
         payload = {"state": state}
-        r = await self._client.put(f"{self.base_url}/task/{task_id}", json=payload)
+        r = await self._client.put(
+            f"{self.base_url}/task/{task_id}", json=payload
+        )
         r.raise_for_status()
 
-    async def reschedule(self, task_id: str, scheduled_start_timestamp: int) -> None:
-        payload = {"status_code": 0, "scheduled_start_timestamp": scheduled_start_timestamp}
-        r = await self._client.put(f"{self.base_url}/task/{task_id}", json=payload)
+    async def reschedule(
+        self, task_id: str, scheduled_start_timestamp: int
+    ) -> None:
+        payload = {
+            "status_code": 0,
+            "scheduled_start_timestamp": scheduled_start_timestamp,
+        }
+        r = await self._client.put(
+            f"{self.base_url}/task/{task_id}", json=payload
+        )
         r.raise_for_status()
 
     async def get_task(self, task_id: str) -> dict:
@@ -73,4 +97,4 @@ class TaskBrokerClient:
         return r.json()
 
     async def aclose(self) -> None:
-        await self._client.aclose() 
+        await self._client.aclose()

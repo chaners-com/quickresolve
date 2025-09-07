@@ -1,8 +1,12 @@
 FROM python:3.11-slim
 
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-COPY requirements.txt .
+COPY redaction-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install shared task libraries
@@ -11,7 +15,8 @@ COPY libs/task_manager /app/libs/task_manager
 RUN pip install -e /app/libs/task_broker_client && \
     pip install -e /app/libs/task_manager
 
-COPY main.py .
+COPY redaction-service/main.py .
+COPY redaction-service/src ./src
 
 EXPOSE 8007
 

@@ -15,7 +15,9 @@ from task_broker_client import TaskBrokerClient
 from task_manager import TaskManager
 
 TASK_SERVICE_URL = os.getenv("TASK_SERVICE_URL", "http://task-service:8010")
-SERVICE_BASE = os.getenv("INDEX_DOCUMENT_SERVICE_URL", "http://index-document-service:8011")
+SERVICE_BASE = os.getenv(
+    "INDEX_DOCUMENT_SERVICE_URL", "http://index-document-service:8011"
+)
 
 app = FastAPI()
 
@@ -34,18 +36,7 @@ class PipelineDefinition(BaseModel):
     task_id: Optional[str] = None
 
 
-async def _update_task_status(task_id: Optional[str], **kwargs):
-    if not task_id:
-        return
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.put(f"{TASK_SERVICE_URL}/task/{task_id}", json=kwargs)
-    except Exception:
-        pass
-
-
-# Global cap for concurrent embed tasks across
-# all pipelines (per service instance)
+# Global cap for concurrent fanout tasks (per service instance)
 try:
     MAX_EMBEDDING_CONCURRENT_TASKS = max(
         1, int(os.getenv("MAX_EMBEDDING_CONCURRENT_TASKS", "4") or "4")
@@ -60,13 +51,14 @@ broker = TaskBrokerClient(
     health_url=f"{SERVICE_BASE}/health",
     topic="index-document",
 )
-manager = TaskManager(broker, max_concurrent=int(os.getenv("INDEX_DOC_MAX_CONCURRENT", "2")))
+manager = TaskManager(
+    broker, max_concurrent=int(os.getenv("INDEX_DOC_MAX_CONCURRENT", "2"))
+)
 
 
 @app.on_event("startup")
 async def on_startup():
-    # Initial readiness is advertised by TaskManager in __init__
-    pass
+    await manager.start()
 
 
 @app.on_event("shutdown")
@@ -74,32 +66,32 @@ async def on_shutdown():
     await manager.stop()
 
 
-def _canonicalize_steps(steps: List[PipelineStep]) -> List[PipelineStep]:
-    """Return steps ordered as
-    parse-document -> chunk -> redact -> embed (others last)."""
-    priority = {"parse-document": 0, "chunk": 1, "redact": 2, "embed": 3}
-    # Stable sort ensures unknown steps keep relative order after known ones
-    return sorted(
-        steps, key=lambda s: priority.get((s.name or "").strip().lower(), 4)
-    )
-
-
 @app.get("/health")
 async def health():
     return {"status": "healthy", "service": "index-document-service"}
 
 
+def _canonicalize_steps(steps: List[PipelineStep]) -> List[PipelineStep]:
+    """Return steps ordered as:
+    parse-document -> chunk -> redact -> embed (others last)."""
+    priority = {"parse-document": 0, "chunk": 1, "redact": 2, "embed": 3}
+    return sorted(
+        steps, key=lambda s: priority.get((s.name or "").strip().lower(), 4)
+    )
+
+
 @app.post("/")
 async def consume(input: dict):
     async def work(payload: dict) -> dict:
-        # payload contains task_id + original input fields
         definition = PipelineDefinition(
             description="Index document pipeline",
             s3_key=payload["s3_key"],
             file_id=payload["file_id"],
             workspace_id=payload["workspace_id"],
             original_filename=payload["original_filename"],
-            steps=[PipelineStep(name=s["name"]) for s in payload.get("steps", [])],
+            steps=[
+                PipelineStep(name=s["name"]) for s in payload.get("steps", [])
+            ],
             task_id=payload.get("task_id"),
         )
         # Let exceptions bubble to TaskManager so it FAILs and frees slot
@@ -118,22 +110,38 @@ async def _run_pipeline(definition: PipelineDefinition):
         "original_filename": definition.original_filename,
     }
     # Artifact context persists outputs needed by later steps
+    # regardless of order
     artifact_ctx: Dict[str, Any] = {}
 
-<<<<<<< HEAD
     async with httpx.AsyncClient(timeout=30) as client:
         prev_output: Dict[str, Any] | None = None
-        for step in definition.steps:
+        ordered_steps = _canonicalize_steps(definition.steps)
+        for step in ordered_steps:
             name = (step.name or "").strip().lower()
+
+            # Redaction is a fanout over chunks
+            if name == "redact":
+                chunks = (prev_output or {}).get("chunks") or artifact_ctx.get(
+                    "chunks", []
+                )
+                if not isinstance(chunks, list):
+                    chunks = []
+                await _run_redact_fanout(client, chunks, workspace_id)
+                # keep prev_output pointing to chunks for next steps
+                prev_output = {"chunks": chunks}
+                continue
+
+            # Embed is a fanout over chunks; pipeline ends here
             if name == "embed":
-                # Fan-out per chunk and return when done
-                chunks = (prev_output or {}).get("chunks") or []
+                chunks = (prev_output or {}).get("chunks") or artifact_ctx.get(
+                    "chunks", []
+                )
                 if not isinstance(chunks, list):
                     chunks = []
                 await _run_embed_fanout(client, chunks, workspace_id)
                 return
 
-            # Regular single task step
+            # Regular single task step with simple retries
             tries = 0
             while tries < 3:
                 tries += 1
@@ -143,124 +151,33 @@ async def _run_pipeline(definition: PipelineDefinition):
                         name=name,
                         workspace_id=workspace_id,
                         root_ctx=root_ctx,
+                        artifact_ctx=artifact_ctx,
                         prev_output=prev_output,
                     )
+                    # Persist key artifacts for later steps
+                    if name == "parse-document":
+                        if isinstance(prev_output, dict):
+                            if prev_output.get("parsed_s3_key"):
+                                artifact_ctx["parsed_s3_key"] = prev_output[
+                                    "parsed_s3_key"
+                                ]
+                            if prev_output.get("document_parser_version"):
+                                artifact_ctx["document_parser_version"] = (
+                                    prev_output["document_parser_version"]
+                                )
+                    elif name == "chunk":
+                        if isinstance(prev_output, dict) and prev_output.get(
+                            "chunks"
+                        ):
+                            artifact_ctx["chunks"] = prev_output["chunks"]
                     break
                 except Exception:
                     if tries >= 3:
                         # Propagate failure to TaskManager
                         raise
                     await asyncio.sleep(2 * tries)
-        # Completed all steps without embed
-=======
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            prev_output: Dict[str, Any] | None = None
-            # Reorder steps to canonical order
-            ordered_steps = _canonicalize_steps(definition.steps)
-            for step in ordered_steps:
-                name = (step.name or "").strip().lower()
-                if name == "embed":
-                    # Fan-out per chunk; then finalize this index-document task
-                    chunks = (prev_output or {}).get(
-                        "chunks"
-                    ) or artifact_ctx.get("chunks", [])
-                    if not isinstance(chunks, list):
-                        chunks = []
-                    try:
-                        await _run_embed_fanout(client, chunks, workspace_id)
-                        await _update_task_status(
-                            definition.task_id,
-                            status_code=2,
-                            status={"message": "Document indexing completed"},
-                        )
-                        return
-                    except Exception:
-                        await _update_task_status(
-                            definition.task_id,
-                            status_code=3,
-                            status={"message": "Document embedding failed"},
-                        )
-                        return
-                # Run redact as a fan-out over chunks with same input as embed
-                if name == "redact":
-                    chunks = (prev_output or {}).get(
-                        "chunks"
-                    ) or artifact_ctx.get("chunks", [])
-                    if not isinstance(chunks, list):
-                        chunks = []
-                    try:
-                        await _run_redact_fanout(client, chunks, workspace_id)
-                        # keep prev_output pointing to chunks for next steps
-                        prev_output = {"chunks": chunks}
-                        continue
-                    except Exception:
-                        await _update_task_status(
-                            definition.task_id,
-                            status_code=3,
-                            status={"message": "Document redaction failed"},
-                        )
-                        return
-
-                # Regular single task step
-                tries = 0
-                while tries < 3:
-                    tries += 1
-                    try:
-                        prev_output = await _create_and_wait_task(
-                            client=client,
-                            name=name,
-                            workspace_id=workspace_id,
-                            root_ctx=root_ctx,
-                            artifact_ctx=artifact_ctx,
-                            prev_output=prev_output,
-                        )
-                        # Persist key artifacts
-                        # for later steps regardless of order
-                        if name == "parse-document":
-                            if isinstance(prev_output, dict):
-                                if prev_output.get("parsed_s3_key"):
-                                    artifact_ctx["parsed_s3_key"] = (
-                                        prev_output["parsed_s3_key"]
-                                    )
-                                if prev_output.get("document_parser_version"):
-                                    artifact_ctx["document_parser_version"] = (
-                                        prev_output["document_parser_version"]
-                                    )
-                        elif name == "redact":
-                            if isinstance(
-                                prev_output, dict
-                            ) and prev_output.get("redacted_s3_key"):
-                                artifact_ctx["redacted_s3_key"] = prev_output[
-                                    "redacted_s3_key"
-                                ]
-                        elif name == "chunk":
-                            if isinstance(
-                                prev_output, dict
-                            ) and prev_output.get("chunks"):
-                                artifact_ctx["chunks"] = prev_output["chunks"]
-                        break
-                    except Exception:
-                        if tries >= 3:
-                            raise
-                        await asyncio.sleep(2 * tries)
-
-        # All steps done and no embed step was present; mark completed
-        await _update_task_status(
-            definition.task_id,
-            status_code=2,
-            status={"message": "Document indexed successfully"},
-        )
-        return
-    except Exception:
-        # Failed at some step
-        await _update_task_status(
-            definition.task_id,
-            status_code=3,
-            status={"message": "Document indexing failed"},
-        )
->>>>>>> main
-        return
+    # Completed all steps without embed
+    return
 
 
 async def _create_and_wait_task(
@@ -280,21 +197,6 @@ async def _create_and_wait_task(
             "file_id": root_ctx["file_id"],
             "workspace_id": workspace_id,
             "original_filename": root_ctx["original_filename"],
-        }
-    elif name == "redact":
-        step_input = {
-            # Prefer parsed artifact
-            # for redaction even if we reordered after chunk
-            "s3_key": artifact_ctx.get("parsed_s3_key")
-            or (prev_output or {}).get("parsed_s3_key")
-            or root_ctx.get("s3_key"),
-            "file_id": root_ctx["file_id"],
-            "workspace_id": workspace_id,
-            "original_filename": root_ctx["original_filename"],
-            "document_parser_version": artifact_ctx.get(
-                "document_parser_version"
-            )
-            or (prev_output or {}).get("document_parser_version"),
         }
     elif name == "chunk":
         step_input = {
@@ -349,7 +251,7 @@ async def _create_and_wait_task(
 async def _run_redact_fanout(
     client: httpx.AsyncClient, chunks: List[Dict[str, Any]], workspace_id: int
 ):
-    # Run multiple redact tasks (pass-through) and wait for all to complete
+    # Run multiple redact tasks and wait for all to complete
     sem = EMBED_SEM
 
     async def _one(chunk: Dict[str, Any]):
@@ -386,8 +288,8 @@ async def _run_redact_fanout(
 async def _run_embed_fanout(
     client: httpx.AsyncClient, chunks: List[Dict[str, Any]], workspace_id: int
 ):
-    # Run multiple embed tasks and wait
-    # for all to complete (globally capped by EMBED_SEM)
+    # Run multiple embed tasks and wait for all to complete
+    # (globally capped by EMBED_SEM)
     sem = EMBED_SEM
 
     async def _one(chunk: Dict[str, Any]):

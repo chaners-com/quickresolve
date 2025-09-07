@@ -2,10 +2,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY index-document-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Install shared task libraries
+COPY libs/task_broker_client /app/libs/task_broker_client
+COPY libs/task_manager /app/libs/task_manager
+RUN pip install -e /app/libs/task_broker_client && \
+    pip install -e /app/libs/task_manager
+
+COPY index-document-service/main.py .
 
 EXPOSE 8011
 

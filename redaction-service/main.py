@@ -2,10 +2,11 @@
 import os
 from typing import Optional
 
-import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from task_broker_client import TaskBrokerClient
+from task_manager import TaskManager
 
 app = FastAPI(
     title="Redaction Service",
@@ -20,7 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-TASK_SERVICE_URL = os.getenv("TASK_SERVICE_URL", "http://task-service:8010")
+SERVICE_BASE = os.getenv("REDACTION_SERVICE_URL", "http://redaction-service:8007")
 
 
 class RedactRequest(BaseModel):
@@ -37,33 +38,41 @@ async def health():
     return {"status": "healthy", "service": "redaction"}
 
 
-async def _update_task_status(task_id: Optional[str], **kwargs):
-    if not task_id:
-        return
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.put(f"{TASK_SERVICE_URL}/task/{task_id}", json=kwargs)
-    except Exception:
-        pass
+# Task broker client/manager for consuming redact tasks
+broker = TaskBrokerClient(
+    endpoint_url=f"{SERVICE_BASE}/redact",
+    health_url=f"{SERVICE_BASE}/health",
+    topic="redact",
+)
+manager = TaskManager(broker, max_concurrent=int(os.getenv("REDACT_MAX_CONCURRENT", "2")))
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await manager.stop()
+
+
+async def _process_redaction(req: RedactRequest) -> dict:
+    # No-op: return same key; a real service would write a redacted artifact
+    return {
+        "redacted_s3_key": req.s3_key,
+        "file_id": req.file_id,
+        "workspace_id": req.workspace_id,
+    }
 
 
 @app.post("/redact")
-async def redact(req: RedactRequest):
-    # Simulate redaction as a no-op and update own task when done
-    await _update_task_status(
-        req.task_id, status_code=1, status={"message": "Running redaction"}
-    )
+async def consume(input: dict):
+    async def work(payload: dict) -> dict:
+        req = RedactRequest(
+            s3_key=payload["s3_key"],
+            file_id=payload["file_id"],
+            workspace_id=payload["workspace_id"],
+            original_filename=payload.get("original_filename"),
+            document_parser_version=payload.get("document_parser_version"),
+            task_id=payload.get("task_id"),
+        )
+        # Let exceptions bubble to TaskManager so it FAILs and frees slot
+        return await _process_redaction(req)
 
-    # No-op: return same key; a real service would write
-    # a redacted artifact and return its key
-    await _update_task_status(
-        req.task_id,
-        status_code=2,
-        status={"message": "Redaction completed"},
-        output={
-            "redacted_s3_key": req.s3_key,
-            "file_id": req.file_id,
-            "workspace_id": req.workspace_id,
-        },
-    )
-    return {"accepted": True}
+    return await manager.execute_task(input, work)

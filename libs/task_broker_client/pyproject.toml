@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "task-broker-client"
+version = "0.1.0"
+description = "QuickResolve Task Broker client"
+authors = [{name="QuickResolve"}]
+requires-python = ">=3.9"
+dependencies = [
+  "httpx>=0.24.0",
+]
+
+[tool.setuptools]
+py-modules = ["task_broker_client"] 

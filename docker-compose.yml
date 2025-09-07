@@ -73,7 +73,9 @@ services:
     restart: unless-stopped
 
   ingestion-service:
-    build: ./ingestion-service
+    build:
+      context: .
+      dockerfile: ingestion-service/Dockerfile
     ports:
       - "8000:8000"
     environment:
@@ -86,7 +88,9 @@ services:
     restart: unless-stopped
 
   embedding-service:
-    build: ./embedding-service
+    build:
+      context: .
+      dockerfile: embedding-service/Dockerfile
     ports:
       - "8001:8001"
     environment:
@@ -112,7 +116,8 @@ services:
 
   document-parsing-service:
     build:
-      context: ./document-parsing-service
+      context: .
+      dockerfile: document-parsing-service/Dockerfile
       args:
         PDF_PARSER_VERSION: "${PDF_PARSER_VERSION:-fast-pdf-parser-1}"
         DOCX_PARSER_VERSION: "${DOCX_PARSER_VERSION:-fast-docx-parser-1}"
@@ -133,7 +138,9 @@ services:
     restart: unless-stopped
 
   chunking-service:
-    build: ./chunking-service
+    build:
+      context: .
+      dockerfile: chunking-service/Dockerfile
     ports:
       - "8006:8006"
     environment:
@@ -147,7 +154,9 @@ services:
     restart: unless-stopped
 
   redaction-service:
-    build: ./redaction-service
+    build:
+      context: .
+      dockerfile: redaction-service/Dockerfile
     ports:
       - "8007:8007"
     environment:

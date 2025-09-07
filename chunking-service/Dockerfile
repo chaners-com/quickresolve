@@ -5,6 +5,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install shared task libraries
+COPY libs/task_broker_client /app/libs/task_broker_client
+COPY libs/task_manager /app/libs/task_manager
+RUN pip install -e /app/libs/task_broker_client && \
+    pip install -e /app/libs/task_manager
+
 COPY main.py .
 COPY src ./src
 

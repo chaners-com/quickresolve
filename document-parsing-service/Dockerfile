@@ -10,6 +10,12 @@ WORKDIR /app
 RUN pip install --upgrade pip setuptools wheel
 RUN pip install fastapi uvicorn pydantic boto3 httpx
 
+# Install shared task libraries
+COPY libs/task_broker_client /app/libs/task_broker_client
+COPY libs/task_manager /app/libs/task_manager
+RUN pip install -e /app/libs/task_broker_client && \
+    pip install -e /app/libs/task_manager
+
 # --- Example: conditional installs based on parser versions (build-time) ---
 # NOTE: To use these at build time, pass build args from compose:
 #   services:

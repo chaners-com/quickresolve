@@ -11,8 +11,11 @@ from typing import Any, Dict, List, Optional
 import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel
+from task_broker_client import TaskBrokerClient
+from task_manager import TaskManager
 
 TASK_SERVICE_URL = os.getenv("TASK_SERVICE_URL", "http://task-service:8010")
+SERVICE_BASE = os.getenv("INDEX_DOCUMENT_SERVICE_URL", "http://index-document-service:8011")
 
 app = FastAPI()
 
@@ -51,6 +54,25 @@ except ValueError:
     MAX_EMBEDDING_CONCURRENT_TASKS = 4
 EMBED_SEM = asyncio.Semaphore(MAX_EMBEDDING_CONCURRENT_TASKS)
 
+# Task broker client/manager for consuming index-document tasks
+broker = TaskBrokerClient(
+    endpoint_url=f"{SERVICE_BASE}/",
+    health_url=f"{SERVICE_BASE}/health",
+    topic="index-document",
+)
+manager = TaskManager(broker, max_concurrent=int(os.getenv("INDEX_DOC_MAX_CONCURRENT", "2")))
+
+
+@app.on_event("startup")
+async def on_startup():
+    # Initial readiness is advertised by TaskManager in __init__
+    pass
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await manager.stop()
+
 
 @app.get("/health")
 async def health():
@@ -58,18 +80,26 @@ async def health():
 
 
 @app.post("/")
-async def run(definition: PipelineDefinition):
-    # Fire-and-forget orchestration
-    asyncio.create_task(_run_pipeline(definition))
-    return {}
+async def consume(input: dict):
+    async def work(payload: dict) -> dict:
+        # payload contains task_id + original input fields
+        definition = PipelineDefinition(
+            description="Index document pipeline",
+            s3_key=payload["s3_key"],
+            file_id=payload["file_id"],
+            workspace_id=payload["workspace_id"],
+            original_filename=payload["original_filename"],
+            steps=[PipelineStep(name=s["name"]) for s in payload.get("steps", [])],
+            task_id=payload.get("task_id"),
+        )
+        # Let exceptions bubble to TaskManager so it FAILs and frees slot
+        await _run_pipeline(definition)
+        return {}
+
+    return await manager.execute_task(input, work)
 
 
 async def _run_pipeline(definition: PipelineDefinition):
-    # Mark this index-document task as running
-    await _update_task_status(
-        definition.task_id, status_code=1, status={"message": "running"}
-    )
-
     workspace_id = definition.workspace_id
     root_ctx: Dict[str, Any] = {
         "s3_key": definition.s3_key,
@@ -78,64 +108,37 @@ async def _run_pipeline(definition: PipelineDefinition):
         "original_filename": definition.original_filename,
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            prev_output: Dict[str, Any] | None = None
-            for step in definition.steps:
-                name = (step.name or "").strip().lower()
-                if name == "embed":
-                    # Fan-out per chunk; then finalize this index-document task
-                    chunks = (prev_output or {}).get("chunks") or []
-                    if not isinstance(chunks, list):
-                        chunks = []
-                    try:
-                        await _run_embed_fanout(client, chunks, workspace_id)
-                        await _update_task_status(
-                            definition.task_id,
-                            status_code=2,
-                            status={"message": "Document indexing completed"},
-                        )
-                        return
-                    except Exception:
-                        await _update_task_status(
-                            definition.task_id,
-                            status_code=3,
-                            status={"message": "Document embedding failed"},
-                        )
-                        return
+    async with httpx.AsyncClient(timeout=30) as client:
+        prev_output: Dict[str, Any] | None = None
+        for step in definition.steps:
+            name = (step.name or "").strip().lower()
+            if name == "embed":
+                # Fan-out per chunk and return when done
+                chunks = (prev_output or {}).get("chunks") or []
+                if not isinstance(chunks, list):
+                    chunks = []
+                await _run_embed_fanout(client, chunks, workspace_id)
+                return
 
-                # Regular single task step
-                tries = 0
-                while tries < 3:
-                    tries += 1
-                    try:
-                        prev_output = await _create_and_wait_task(
-                            client=client,
-                            name=name,
-                            workspace_id=workspace_id,
-                            root_ctx=root_ctx,
-                            prev_output=prev_output,
-                        )
-                        break
-                    except Exception:
-                        if tries >= 3:
-                            raise
-                        await asyncio.sleep(2 * tries)
-
-        # All steps done and no embed step was present; mark completed
-        await _update_task_status(
-            definition.task_id,
-            status_code=2,
-            status={"message": "Document indexed successfully"},
-        )
-        return
-    except Exception:
-        # Failed at some step
-        await _update_task_status(
-            definition.task_id,
-            status_code=3,
-            status={"message": "Document indexing failed"},
-        )
+            # Regular single task step
+            tries = 0
+            while tries < 3:
+                tries += 1
+                try:
+                    prev_output = await _create_and_wait_task(
+                        client=client,
+                        name=name,
+                        workspace_id=workspace_id,
+                        root_ctx=root_ctx,
+                        prev_output=prev_output,
+                    )
+                    break
+                except Exception:
+                    if tries >= 3:
+                        # Propagate failure to TaskManager
+                        raise
+                    await asyncio.sleep(2 * tries)
+        # Completed all steps without embed
         return
 
 

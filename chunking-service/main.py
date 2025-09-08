@@ -56,7 +56,7 @@ broker = TaskBrokerClient(
     topic="chunk",
 )
 manager = TaskManager(
-    broker, max_concurrent=int(os.getenv("CHUNK_MAX_CONCURRENT", "5"))
+    broker, max_concurrent=int(os.getenv("CHUNK_MAX_CONCURRENT", "20"))
 )
 
 

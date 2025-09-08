@@ -6,6 +6,7 @@ calls to `TaskBrokerClient` (no background loop).
 """
 
 import asyncio
+import logging
 from typing import Awaitable, Callable
 
 from task_broker_client import TaskBrokerClient
@@ -28,6 +29,7 @@ class TaskManager:
         self._available_slots = max_concurrent
         # Initial readiness will be triggered
         # explicitly via start() on app startup
+        self._ready_lock = asyncio.Lock()
 
     def inflight_count(self) -> int:
         return len(self._inflight)
@@ -36,15 +38,33 @@ class TaskManager:
         return max(0, self.max_concurrent - self.inflight_count())
 
     async def start(self) -> None:
+        # Advertise readiness with retry/backoff until the broker is reachable.
         if self._available_slots <= 0:
             return
-        try:
-            await self.broker.ready()
-            self._available_slots -= 1
-        except Exception:
-            # swallow and rely on future calls (e.g., on completion)
-            # to retry readiness
-            pass
+        async with self._ready_lock:
+            # Re-check after acquiring the lock to avoid double-advertising.
+            if self._available_slots <= 0:
+                return
+            backoff_seconds = 0.5
+            max_backoff_seconds = 10.0
+            while True:
+                try:
+                    await self.broker.ready()
+                    self._available_slots -= 1
+                    return
+                except Exception as exc:
+                    logging.warning(
+                        "Task broker not ready; retrying in %.1fs: %s",
+                        backoff_seconds,
+                        exc,
+                    )
+                    try:
+                        await asyncio.sleep(backoff_seconds)
+                    except asyncio.CancelledError:
+                        raise
+                    backoff_seconds = min(
+                        max_backoff_seconds, backoff_seconds * 2
+                    )
 
     async def execute_task(
         self, task_payload: dict, work: Callable[[dict], Awaitable[dict]]
@@ -59,6 +79,7 @@ class TaskManager:
             await self.broker.nack(task_id)
             return {"accepted": False, "reason": "no-capacity"}
         self._inflight.add(task_id)
+
         # If we still have unused tokens after taking this task,
         # advertise another slot
         if self._available_slots > 0:

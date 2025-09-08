@@ -39,7 +39,7 @@ class PipelineDefinition(BaseModel):
 # Global cap for concurrent fanout tasks (per service instance)
 try:
     MAX_EMBEDDING_CONCURRENT_TASKS = max(
-        1, int(os.getenv("MAX_EMBEDDING_CONCURRENT_TASKS", "4") or "4")
+        1, int(os.getenv("MAX_EMBEDDING_CONCURRENT_TASKS", "20") or "20")
     )
 except ValueError:
     MAX_EMBEDDING_CONCURRENT_TASKS = 4

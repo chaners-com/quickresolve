@@ -80,7 +80,7 @@ broker = TaskBrokerClient(
     topic="embed",
 )
 manager = TaskManager(
-    broker, max_concurrent=int(os.getenv("EMBED_MAX_CONCURRENT", "4"))
+    broker, max_concurrent=int(os.getenv("EMBED_MAX_CONCURRENT", "3"))
 )
 
 

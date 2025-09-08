@@ -3,7 +3,26 @@
 """
 Redaction service.
 
-Redaction operates on chunks to maximize safety and parallelism.
+Redaction perates on chunks to maximize safety and parallelism.
+
+Mask PII types with deterministic rules (always enabled in v1):
+  - Emails in text and in URLs (including `mailto:`)
+  - IPv4 and IPv6 (validated)
+  - Credit card candidates (Luhn-validated)
+  - IBAN (mod-97 check)
+  - E.164 phones (conservative pattern)
+Deterministic per-document suffix:
+  - Use HMAC-SHA256 with a per-document key derived as
+    `HMAC(service_secret, file_id)`; token suffix
+    for each matched value is `HMAC(per_doc_key, value)[:suffix_bytes]`
+    in hex. This guarantees consistent suffixes for the same value within
+    a document even when chunks are processed in parallel
+    and across instances, without in-memory maps.
+  - If later we need cross-file stability within a workspace,
+    derive `per_workspace_key = HMAC(service_secret, workspace_id)`
+    and switch derivation accordingly. For now, per-document only.
+Produce output Markdown preserving structure.
+
 """
 
 import json
@@ -80,7 +99,7 @@ broker = TaskBrokerClient(
     topic="redact",
 )
 manager = TaskManager(
-    broker, max_concurrent=int(os.getenv("REDACT_MAX_CONCURRENT", "2"))
+    broker, max_concurrent=int(os.getenv("REDACT_MAX_CONCURRENT", "20"))
 )
 
 

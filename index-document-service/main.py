@@ -36,15 +36,6 @@ class PipelineDefinition(BaseModel):
     task_id: Optional[str] = None
 
 
-# Global cap for concurrent fanout tasks (per service instance)
-try:
-    MAX_EMBEDDING_CONCURRENT_TASKS = max(
-        1, int(os.getenv("MAX_EMBEDDING_CONCURRENT_TASKS", "20") or "20")
-    )
-except ValueError:
-    MAX_EMBEDDING_CONCURRENT_TASKS = 4
-EMBED_SEM = asyncio.Semaphore(MAX_EMBEDDING_CONCURRENT_TASKS)
-
 # Task broker client/manager for consuming index-document tasks
 broker = TaskBrokerClient(
     endpoint_url=f"{SERVICE_BASE}/",
@@ -52,7 +43,10 @@ broker = TaskBrokerClient(
     topic="index-document",
 )
 manager = TaskManager(
-    broker, max_concurrent=int(os.getenv("INDEX_DOC_MAX_CONCURRENT", "2"))
+    broker,
+    max_concurrent=max(
+        1, int(os.getenv("INDEX_DOC_MAX_CONCURRENT", "20") or "20")
+    ),
 )
 
 
@@ -252,34 +246,31 @@ async def _run_redact_fanout(
     client: httpx.AsyncClient, chunks: List[Dict[str, Any]], workspace_id: int
 ):
     # Run multiple redact tasks and wait for all to complete
-    sem = EMBED_SEM
-
     async def _one(chunk: Dict[str, Any]):
-        async with sem:
-            body = {
-                "name": "redact",
-                "input": {
-                    "chunk_id": chunk.get("chunk_id") or chunk.get("id"),
-                    "workspace_id": workspace_id,
-                },
+        body = {
+            "name": "redact",
+            "input": {
+                "chunk_id": chunk.get("chunk_id") or chunk.get("id"),
                 "workspace_id": workspace_id,
-            }
-            r = await client.post(f"{TASK_SERVICE_URL}/task", json=body)
-            r.raise_for_status()
-            task_id = r.json().get("id")
-            if not task_id:
-                raise RuntimeError("Task creation did not return id")
-            while True:
-                await asyncio.sleep(1)
-                s = await client.get(f"{TASK_SERVICE_URL}/task/{task_id}")
-                if s.status_code != 200:
-                    continue
-                data = s.json()
-                code = int(data.get("status_code") or 0)
-                if code == 2:
-                    return
-                if code == 3:
-                    raise RuntimeError("redact failed")
+            },
+            "workspace_id": workspace_id,
+        }
+        r = await client.post(f"{TASK_SERVICE_URL}/task", json=body)
+        r.raise_for_status()
+        task_id = r.json().get("id")
+        if not task_id:
+            raise RuntimeError("Task creation did not return id")
+        while True:
+            await asyncio.sleep(1)
+            s = await client.get(f"{TASK_SERVICE_URL}/task/{task_id}")
+            if s.status_code != 200:
+                continue
+            data = s.json()
+            code = int(data.get("status_code") or 0)
+            if code == 2:
+                return
+            if code == 3:
+                raise RuntimeError("redact failed")
 
     tasks = [asyncio.create_task(_one(chunk)) for chunk in chunks]
     await asyncio.gather(*tasks)
@@ -289,35 +280,31 @@ async def _run_embed_fanout(
     client: httpx.AsyncClient, chunks: List[Dict[str, Any]], workspace_id: int
 ):
     # Run multiple embed tasks and wait for all to complete
-    # (globally capped by EMBED_SEM)
-    sem = EMBED_SEM
-
     async def _one(chunk: Dict[str, Any]):
-        async with sem:
-            body = {
-                "name": "embed",
-                "input": {
-                    "chunk_id": chunk.get("chunk_id") or chunk.get("id"),
-                    "workspace_id": workspace_id,
-                },
+        body = {
+            "name": "embed",
+            "input": {
+                "chunk_id": chunk.get("chunk_id") or chunk.get("id"),
                 "workspace_id": workspace_id,
-            }
-            r = await client.post(f"{TASK_SERVICE_URL}/task", json=body)
-            r.raise_for_status()
-            task_id = r.json().get("id")
-            if not task_id:
-                raise RuntimeError("Task creation did not return id")
-            while True:
-                await asyncio.sleep(1)
-                s = await client.get(f"{TASK_SERVICE_URL}/task/{task_id}")
-                if s.status_code != 200:
-                    continue
-                data = s.json()
-                code = int(data.get("status_code") or 0)
-                if code == 2:
-                    return
-                if code == 3:
-                    raise RuntimeError("embed failed")
+            },
+            "workspace_id": workspace_id,
+        }
+        r = await client.post(f"{TASK_SERVICE_URL}/task", json=body)
+        r.raise_for_status()
+        task_id = r.json().get("id")
+        if not task_id:
+            raise RuntimeError("Task creation did not return id")
+        while True:
+            await asyncio.sleep(1)
+            s = await client.get(f"{TASK_SERVICE_URL}/task/{task_id}")
+            if s.status_code != 200:
+                continue
+            data = s.json()
+            code = int(data.get("status_code") or 0)
+            if code == 2:
+                return
+            if code == 3:
+                raise RuntimeError("embed failed")
 
     tasks = [asyncio.create_task(_one(chunk)) for chunk in chunks]
     await asyncio.gather(*tasks)

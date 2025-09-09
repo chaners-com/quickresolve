@@ -11,6 +11,17 @@ class CompleteDOCXParser:
     VERSION = "complete-docx-parser-1"
 
     @staticmethod
+    async def warmup():
+        try:
+            from docling.datamodel.base_models import InputFormat
+            from docling.document_converter import DocumentConverter
+
+            converter = DocumentConverter()
+            converter.initialize_pipeline(InputFormat.DOCX)
+        except Exception as e:
+            print(f"Docx parser Docling warmup failed: {e}")
+
+    @staticmethod
     async def parse(
         content_bytes: bytes, context: dict
     ) -> Tuple[str, List[dict]]:

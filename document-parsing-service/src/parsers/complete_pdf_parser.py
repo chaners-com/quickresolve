@@ -11,6 +11,30 @@ class CompletePDFParser:
     VERSION = "complete-pdf-parser-1"
 
     @staticmethod
+    async def warmup():
+        try:
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import (
+                DocumentConverter,
+                PdfFormatOption,
+            )
+
+            pipeline_options = PdfPipelineOptions()
+            pipeline_options.do_ocr = False
+
+            converter = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(
+                        pipeline_options=pipeline_options
+                    )
+                }
+            )
+            converter.initialize_pipeline(InputFormat.PDF)
+        except Exception as e:
+            print(f"PDF parser Docling warmup failed: {e}")
+
+    @staticmethod
     async def parse(
         content_bytes: bytes, context: dict
     ) -> Tuple[str, List[dict]]:

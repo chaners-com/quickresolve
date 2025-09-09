@@ -13,7 +13,7 @@ import boto3
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from src.parsers.registry import PARSER_REGISTRY, get_parser_class
+from src.parsers.registry import get_parser_class, warmup_parsers
 from task_broker_client import TaskBrokerClient
 from task_manager import TaskManager
 
@@ -66,6 +66,9 @@ async def on_startup():
         aws_access_key_id=S3_ACCESS_KEY,
         aws_secret_access_key=S3_SECRET_KEY,
     )
+
+    await warmup_parsers()
+
     await manager.start()
 
 
@@ -117,9 +120,8 @@ async def _run_parse_job(request: ParseRequest) -> dict:
 
     # Select parser from registry by extension and content type,
     # honoring env overrides
-    parser_cls = get_parser_class(ext, s3_content_type) or PARSER_REGISTRY.get(
-        ext
-    )
+    parser_cls = get_parser_class(ext, s3_content_type)
+
     if not parser_cls:
         raise ValueError(f"unsupported file type: .{ext}")
 

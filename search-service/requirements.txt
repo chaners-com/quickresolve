@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+qdrant-client==1.15.1
+google-generativeai
+httpx
+# Testing dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0 

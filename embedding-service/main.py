@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 Embedding Service
-Embeds chunks and stores in Qdrant.
+Embeds chunks and writes vector files to S3 under vectors/.
+Does not store vectors in payload JSON.
 """
 
 import asyncio
 import json
 import os
-import time
 from typing import Optional, Union
 
 import boto3
@@ -15,8 +15,6 @@ import google.generativeai as genai
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from qdrant_client import QdrantClient, models
-from qdrant_client.http.exceptions import UnexpectedResponse
 from task_broker_client import TaskBrokerClient
 from task_manager import TaskManager
 
@@ -49,7 +47,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"), timeout=60)
 GENAI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GENAI_API_KEY:
     genai.configure(api_key=GENAI_API_KEY)
@@ -68,8 +65,6 @@ s3 = boto3.client(
     aws_secret_access_key=S3_SECRET_KEY,
 )
 
-QDRANT_COLLECTION_NAME = "file_embeddings"
-
 # Broker/Manager
 SERVICE_BASE = os.getenv(
     "EMBEDDING_SERVICE_URL", "http://embedding-service:8001"
@@ -80,7 +75,7 @@ broker = TaskBrokerClient(
     topic="embed",
 )
 manager = TaskManager(
-    broker, max_concurrent=int(os.getenv("EMBED_MAX_CONCURRENT", "3"))
+    broker, max_concurrent=int(os.getenv("EMBED_MAX_CONCURRENT", "20"))
 )
 
 
@@ -91,32 +86,6 @@ async def health():
 
 @app.on_event("startup")
 def startup_event():
-    # Wait for Qdrant to be ready
-    retries = 10
-    while retries > 0:
-        try:
-            qdrant_client.get_collections()
-            print("Qdrant is ready.")
-            break
-        except (UnexpectedResponse, Exception):
-            print("Qdrant not ready, waiting...")
-            time.sleep(5)
-            retries -= 1
-
-    if retries == 0:
-        print("Could not connect to Qdrant. Exiting.")
-        exit(1)
-
-    try:
-        qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
-    except (UnexpectedResponse, Exception):
-        qdrant_client.recreate_collection(
-            collection_name=QDRANT_COLLECTION_NAME,
-            vectors_config=models.VectorParams(
-                size=768, distance=models.Distance.COSINE
-            ),
-        )
-
     # Advertise readiness for one task slot
     asyncio.get_event_loop().create_task(manager.start())
 
@@ -138,10 +107,9 @@ async def consume(input: dict):
             chunk_id=payload["chunk_id"],
             task_id=payload.get("task_id"),
         )
-        # Retrieve canonical chunk payload
-        # from S3 and upsert embedding by chunk_id.
-        key = f"{req.workspace_id}/payload/{req.chunk_id}.json"
-        obj = s3.get_object(Bucket=S3_BUCKET, Key=key)
+        # Retrieve canonical chunk payload from S3
+        payload_key = f"{req.workspace_id}/payloads/{req.chunk_id}.json"
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=payload_key)
         payload_bytes = obj["Body"].read()
         chunk_payload = json.loads(payload_bytes.decode("utf-8"))
 
@@ -149,32 +117,47 @@ async def consume(input: dict):
         if not isinstance(text, str) or not text.strip():
             raise ValueError("Empty content in payload")
 
-        embedding = genai.embed_content(
+        vec = genai.embed_content(
             model=embedding_model,
             content=text,
             task_type="retrieval_document",
         )["embedding"]
 
-        # Ensure version.embedding_model is populated by embedding-service
+        # Ensure version.embedding_model
+        # is populated (in payload metadata only)
         version = chunk_payload.get("version") or {}
         if isinstance(version, dict):
             version["embedding_model"] = embedding_model
             chunk_payload["version"] = version
 
-        # Upsert with retries
+        # Persist payload (without vector) to keep metadata updated
+        body = json.dumps(chunk_payload).encode("utf-8")
         last_err: Exception | None = None
         for delay in _retry_backoff_delays(3):
             try:
-                qdrant_client.upsert(
-                    collection_name=QDRANT_COLLECTION_NAME,
-                    points=[
-                        models.PointStruct(
-                            id=chunk_payload.get("chunk_id"),
-                            vector=embedding,
-                            payload=chunk_payload,
-                        )
-                    ],
-                    wait=False,
+                s3.put_object(Bucket=S3_BUCKET, Key=payload_key, Body=body)
+                break
+            except Exception as e:
+                last_err = e
+                if delay > 0:
+                    await asyncio.sleep(delay)
+        else:
+            raise RuntimeError(
+                f"Failed to persist payload metadata to S3: {last_err}"
+            )
+
+        # Write vector file separately under
+        # vectors/<chunk_id>.vec as JSON array
+        vec_key = f"{req.workspace_id}/vectors/{req.chunk_id}.vec"
+        vec_body = json.dumps(vec).encode("utf-8")
+        last_err = None
+        for delay in _retry_backoff_delays(3):
+            try:
+                s3.put_object(
+                    Bucket=S3_BUCKET,
+                    Key=vec_key,
+                    Body=vec_body,
+                    ContentType="application/octet-stream",
                 )
                 break
             except Exception as e:
@@ -182,7 +165,7 @@ async def consume(input: dict):
                 if delay > 0:
                     await asyncio.sleep(delay)
         else:
-            raise RuntimeError(f"Failed to upsert chunk to Qdrant: {last_err}")
+            raise RuntimeError(f"Failed to persist vector to S3: {last_err}")
 
         return {
             "success": True,
@@ -191,41 +174,3 @@ async def consume(input: dict):
         }
 
     return await manager.execute_task(input, work)
-
-
-@app.get("/search/", response_model=list[SearchResult])
-async def search(query: str, workspace_id: int, top_k: int = 5):
-    # Add lightweight retry for transient errors
-    last_err: Exception | None = None
-    for delay in _retry_backoff_delays(3):
-        try:
-            query_embedding = genai.embed_content(
-                model=embedding_model,
-                content=query,
-                task_type="retrieval_query",
-            )["embedding"]
-            search_results = qdrant_client.search(
-                collection_name=QDRANT_COLLECTION_NAME,
-                query_vector=query_embedding,
-                query_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="workspace_id",
-                            match=models.MatchValue(value=workspace_id),
-                        )
-                    ]
-                ),
-                limit=top_k,
-                with_payload=True,
-                timeout=60,
-            )
-            results = [
-                SearchResult(id=hit.id, payload=hit.payload, score=hit.score)
-                for hit in search_results
-            ]
-            return results
-        except Exception as e:
-            last_err = e
-            if delay > 0:
-                await asyncio.sleep(delay)
-    raise RuntimeError(f"Failed to search in Qdrant: {last_err}")

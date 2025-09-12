@@ -15,6 +15,9 @@ EMBEDDING_SERVICE_URL = os.getenv(
 INDEX_DOCUMENT_SERVICE_URL = os.getenv(
     "INDEX_DOCUMENT_SERVICE_URL", "http://index-document-service:8011"
 )
+INDEXING_SERVICE_URL = os.getenv(
+    "INDEXING_SERVICE_URL", "http://indexing-service:8012"
+)
 
 # Keys are lowercase task names
 REGISTRY: dict[str, dict] = {
@@ -49,5 +52,10 @@ REGISTRY: dict[str, dict] = {
         "type": "http",
         "method": "POST",
         "url": f"{EMBEDDING_SERVICE_URL}/embed-chunk",
+    },
+    "index": {
+        "type": "http",
+        "method": "POST",
+        "url": f"{INDEXING_SERVICE_URL}/index-chunk",
     },
 }

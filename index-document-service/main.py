@@ -67,10 +67,16 @@ async def health():
 
 def _canonicalize_steps(steps: List[PipelineStep]) -> List[PipelineStep]:
     """Return steps ordered as:
-    parse-document -> chunk -> redact -> embed (others last)."""
-    priority = {"parse-document": 0, "chunk": 1, "redact": 2, "embed": 3}
+    parse-document -> chunk -> redact -> embed -> index (others last)."""
+    priority = {
+        "parse-document": 0,
+        "chunk": 1,
+        "redact": 2,
+        "embed": 3,
+        "index": 4,
+    }
     return sorted(
-        steps, key=lambda s: priority.get((s.name or "").strip().lower(), 4)
+        steps, key=lambda s: priority.get((s.name or "").strip().lower(), 5)
     )
 
 
@@ -125,7 +131,7 @@ async def _run_pipeline(definition: PipelineDefinition):
                 prev_output = {"chunks": chunks}
                 continue
 
-            # Embed is a fanout over chunks; pipeline ends here
+            # Embed is a fanout over redaction
             if name == "embed":
                 chunks = (prev_output or {}).get("chunks") or artifact_ctx.get(
                     "chunks", []
@@ -133,7 +139,19 @@ async def _run_pipeline(definition: PipelineDefinition):
                 if not isinstance(chunks, list):
                     chunks = []
                 await _run_embed_fanout(client, chunks, workspace_id)
-                return
+                # keep prev_output pointing to chunks for next steps
+                prev_output = {"chunks": chunks}
+                continue
+
+            # Index is a fanout over chunks
+            if name == "index":
+                chunks = (prev_output or {}).get("chunks") or artifact_ctx.get(
+                    "chunks", []
+                )
+                if not isinstance(chunks, list):
+                    chunks = []
+                await _run_index_fanout(client, chunks, workspace_id)
+                continue
 
             # Regular single task step with simple retries
             tries = 0
@@ -170,7 +188,7 @@ async def _run_pipeline(definition: PipelineDefinition):
                         # Propagate failure to TaskManager
                         raise
                     await asyncio.sleep(2 * tries)
-    # Completed all steps without embed
+    # Completed all steps without embed/index
     return
 
 
@@ -305,6 +323,40 @@ async def _run_embed_fanout(
                 return
             if code == 3:
                 raise RuntimeError("embed failed")
+
+    tasks = [asyncio.create_task(_one(chunk)) for chunk in chunks]
+    await asyncio.gather(*tasks)
+
+
+async def _run_index_fanout(
+    client: httpx.AsyncClient, chunks: List[Dict[str, Any]], workspace_id: int
+):
+    # Create multiple index tasks and wait for all to complete
+    async def _one(chunk: Dict[str, Any]):
+        body = {
+            "name": "index",
+            "input": {
+                "chunk_id": chunk.get("chunk_id") or chunk.get("id"),
+                "workspace_id": workspace_id,
+            },
+            "workspace_id": workspace_id,
+        }
+        r = await client.post(f"{TASK_SERVICE_URL}/task", json=body)
+        r.raise_for_status()
+        task_id = r.json().get("id")
+        if not task_id:
+            raise RuntimeError("Task creation did not return id")
+        while True:
+            await asyncio.sleep(1)
+            s = await client.get(f"{TASK_SERVICE_URL}/task/{task_id}")
+            if s.status_code != 200:
+                continue
+            data = s.json()
+            code = int(data.get("status_code") or 0)
+            if code == 2:
+                return
+            if code == 3:
+                raise RuntimeError("index failed")
 
     tasks = [asyncio.create_task(_one(chunk)) for chunk in chunks]
     await asyncio.gather(*tasks)

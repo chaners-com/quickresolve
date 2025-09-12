@@ -212,7 +212,7 @@ async def create_upload_file(
     # 2) Build S3 key using uuid + original extension
     _, ext = os.path.splitext(file.filename)
     ext = (ext or "").lower()
-    s3_key = f"{workspace.id}/{db_file.id}{ext}"
+    s3_key = f"files/{workspace.id}/raws/{db_file.id}{ext}"
 
     # Persist incoming upload to a temporary file before returning,
     # so background task can read it
@@ -267,6 +267,7 @@ async def create_upload_file(
                 {"name": "chunk"},
                 {"name": "redact"},
                 {"name": "embed"},
+                {"name": "index"},
             ]
         )
         index_definition = {

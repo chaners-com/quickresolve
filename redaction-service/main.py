@@ -110,7 +110,7 @@ async def on_shutdown():
 
 async def _process_redaction(req: RedactRequest) -> dict:
     # 1) Fetch canonical payload from S3
-    key = f"{req.workspace_id}/payload/{req.chunk_id}.json"
+    key = f"{req.workspace_id}/payloads/{req.chunk_id}.json"
     obj = s3.get_object(Bucket=S3_BUCKET, Key=key)
     payload_bytes = obj["Body"].read()
     payload = json.loads(payload_bytes.decode("utf-8"))

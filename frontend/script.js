@@ -230,7 +230,7 @@ async function performSearch() {
     resultsDiv.innerHTML = 'Searching...';
 
     const searchResults = await handleRequest(
-        `http://localhost:8001/search/?query=${encodeURIComponent(query)}&workspace_id=${currentWorkspaceId}`,
+        `http://localhost:8003/search/?query=${encodeURIComponent(query)}&workspace_id=${currentWorkspaceId}`,
         { method: 'GET' },
         'Search failed'
     );

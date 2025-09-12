@@ -117,7 +117,7 @@ async def _process_chunk(req: ChunkRequest) -> dict:
     # 3) Save chunk JSONs to S3
     put_tasks: List[asyncio.Task] = []
     for d in all_chunks:
-        key = f"{req.workspace_id}/payload/{d['chunk_id']}.json"
+        key = f"{req.workspace_id}/payloads/{d['chunk_id']}.json"
         payload_bytes = json.dumps(d, ensure_ascii=False).encode("utf-8")
         put_tasks.append(_s3_put_json(S3_BUCKET, key, payload_bytes))
     if put_tasks:

@@ -86,6 +86,8 @@ services:
       S3_BUCKET: "${S3_BUCKET}"
       TASK_SERVICE_URL: "http://task-service:8010"
       MAX_UPLOAD_MB: "4"
+      OTEL_SERVICE_NAME: ingestion-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     restart: unless-stopped
 
   embedding-service:
@@ -103,6 +105,8 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       TASK_SERVICE_URL: "http://task-service:8010"
       EMBED_MAX_CONCURRENT: "20"
+      OTEL_SERVICE_NAME: embedding-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     restart: unless-stopped
 
   ai-agent-service:
@@ -112,6 +116,8 @@ services:
     environment:
       QDRANT_URL: "http://qdrant:6333"
       GEMINI_API_KEY: ${GEMINI_API_KEY}
+      OTEL_SERVICE_NAME: ai-agent-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     restart: unless-stopped
 
 
@@ -134,6 +140,8 @@ services:
       PDF_PARSER_VERSION: "${PDF_PARSER_VERSION:-fast-pdf-parser-1}"
       DOCX_PARSER_VERSION: "${DOCX_PARSER_VERSION:-fast-docx-parser-1}"
       TASK_SERVICE_URL: "http://task-service:8010"
+      OTEL_SERVICE_NAME: document-parsing-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       - db
       - minio
@@ -151,6 +159,8 @@ services:
       S3_ACCESS_KEY: "${MINIO_ROOT_USER}"
       S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD}"
       S3_BUCKET: "${S3_BUCKET}"
+      OTEL_SERVICE_NAME: chunking-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       - minio
     restart: unless-stopped
@@ -167,6 +177,8 @@ services:
       S3_ACCESS_KEY: "${MINIO_ROOT_USER}"
       S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD}"
       S3_BUCKET: "${S3_BUCKET}"
+      OTEL_SERVICE_NAME: redaction-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       - chunking-service
     restart: unless-stopped
@@ -192,6 +204,8 @@ services:
       EMBEDDING_SERVICE_URL: "http://embedding-service:8001"
       INDEX_DOCUMENT_SERVICE_URL: "http://index-document-service:8011"
       INDEXING_SERVICE_URL: "http://indexing-service:8012"
+      OTEL_SERVICE_NAME: task-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       - db
     restart: unless-stopped
@@ -204,6 +218,8 @@ services:
       - "8011:8011"
     environment:
       TASK_SERVICE_URL: "http://task-service:8010"
+      OTEL_SERVICE_NAME: index-document-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       - task-service
     restart: unless-stopped
@@ -222,6 +238,8 @@ services:
       S3_BUCKET: "${S3_BUCKET}"
       TASK_SERVICE_URL: "http://task-service:8010"
       INDEX_MAX_CONCURRENT: "3"
+      OTEL_SERVICE_NAME: indexing-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       - qdrant
       - minio
@@ -237,10 +255,63 @@ services:
     environment:
       QDRANT_URL: "http://qdrant:6333"
       GEMINI_API_KEY: ${GEMINI_API_KEY}
+      OTEL_SERVICE_NAME: search-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       - qdrant
     restart: unless-stopped
 
+  otel-collector:
+    image: otel/opentelemetry-collector:0.99.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"  # OTLP gRPC
+      - "4318:4318"  # OTLP HTTP
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.5.0
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"
+    restart: unless-stopped
+
+  mimir:
+    image: grafana/mimir:2.13.0
+    command: ["-config.file=/etc/mimir.yaml"]
+    volumes:
+      - ./observability/mimir.yaml:/etc/mimir.yaml:ro
+      - mimir_data:/data
+    ports:
+      - "9009:9009"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana_dashboards:/var/lib/grafana/dashboards
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=admin
+    depends_on:
+      - tempo
+      - mimir
+    restart: unless-stopped
+
 volumes:
   postgres_data:
-  qdrant_storage: 
+  qdrant_storage:
+  tempo_data:
+  mimir_data:
+  grafana_dashboards: 

@@ -7,11 +7,28 @@ Upserts embedded chunks into Qdrant.
 import asyncio
 import json
 import os
+import time
 from typing import Optional
 
 import boto3
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# OpenTelemetry (metrics + traces)
+from opentelemetry import context as otel_context
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+    OTLPMetricExporter,
+)
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+    OTLPSpanExporter,
+)
+from opentelemetry.metrics import get_meter, set_meter_provider
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from pydantic import BaseModel
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -65,6 +82,48 @@ manager = TaskManager(
     broker, max_concurrent=int(os.getenv("INDEX_MAX_CONCURRENT", "3"))
 )
 
+# OpenTelemetry init
+OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "indexing-service")
+OTLP_ENDPOINT = os.getenv(
+    "OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317"
+)
+OTEL_METRICS_EXPORT_INTERVAL_MS = int(
+    os.getenv("OTEL_METRICS_EXPORT_INTERVAL_MS", "10000")
+)
+_resource = Resource.create({"service.name": OTEL_SERVICE_NAME})
+_tracer_provider = TracerProvider(resource=_resource)
+_tracer_provider.add_span_processor(
+    BatchSpanProcessor(OTLPSpanExporter(endpoint=OTLP_ENDPOINT))
+)
+trace.set_tracer_provider(_tracer_provider)
+_tracer = trace.get_tracer(__name__)
+_metric_reader = PeriodicExportingMetricReader(
+    OTLPMetricExporter(endpoint=OTLP_ENDPOINT),
+    export_interval_millis=OTEL_METRICS_EXPORT_INTERVAL_MS,
+)
+_meter_provider = MeterProvider(
+    resource=_resource, metric_readers=[_metric_reader]
+)
+set_meter_provider(_meter_provider)
+_meter = get_meter(__name__)
+
+# Instruments (see observability
+IDX_REQS = _meter.create_counter("indexing_requests_total")
+IDX_DONE = _meter.create_counter("indexing_completions_total")
+IDX_ERRS = _meter.create_counter("indexing_errors_total")
+IDX_LAT = _meter.create_histogram("indexing_latency_seconds", unit="s")
+S3_GET_LAT = _meter.create_histogram("s3_download_latency_seconds", unit="s")
+PAYLOAD_IN = _meter.create_counter("payload_bytes_in_total", unit="By")
+VECTOR_IN = _meter.create_counter("vector_bytes_in_total", unit="By")
+UPserts = _meter.create_counter("index_upserts_total")
+UP_LAT = _meter.create_histogram("index_upsert_latency_seconds", unit="s")
+UP_ERRS = _meter.create_counter("index_upsert_errors_total")
+BATCH = _meter.create_histogram("index_batch_size")
+VEC_DIM = _meter.create_histogram("index_vector_dim")
+VEC_DIM_MISMATCH = _meter.create_counter("index_vector_dim_mismatch_total")
+QWAIT = _meter.create_histogram("queue_wait_seconds", unit="s")
+ACK_LAG = _meter.create_histogram("ack_lag_seconds", unit="s")
+
 
 @app.get("/health")
 async def health():
@@ -112,47 +171,133 @@ async def on_shutdown():
 
 @app.post("/index-chunk")
 async def consume(input: dict):
+    service_attrs = {
+        "service": OTEL_SERVICE_NAME,
+        "collection": QDRANT_COLLECTION_NAME,
+    }
+    IDX_REQS.add(1, attributes=service_attrs)
+
     async def work(payload: dict) -> dict:
-        req = IndexChunkRequest(
-            workspace_id=payload["workspace_id"],
-            chunk_id=payload["chunk_id"],
-            task_id=payload.get("task_id"),
-        )
-        # Retrieve payload metadata and vector from S3, then upsert
-        payload_key = f"{req.workspace_id}/payloads/{req.chunk_id}.json"
-        obj = s3.get_object(Bucket=S3_BUCKET, Key=payload_key)
-        payload_bytes = obj["Body"].read()
-        chunk_payload = json.loads(payload_bytes.decode("utf-8"))
-
-        vec_key = f"{req.workspace_id}/vectors/{req.chunk_id}.vec"
-        vec_obj = s3.get_object(Bucket=S3_BUCKET, Key=vec_key)
-        vec_bytes = vec_obj["Body"].read()
-        try:
-            embedding = json.loads(vec_bytes.decode("utf-8"))
-        except Exception:
-            # If stored in another format in the future, handle accordingly
-            raise ValueError("Invalid vector file content")
-
-        if not isinstance(embedding, list) or not embedding:
-            raise ValueError("Missing or invalid embedding vector")
-
-        # Upsert to Qdrant
-        qdrant_client.upsert(
-            collection_name=QDRANT_COLLECTION_NAME,
-            points=[
-                models.PointStruct(
-                    id=chunk_payload.get("chunk_id"),
-                    vector=embedding,
-                    payload=chunk_payload,
+        t0 = time.time()
+        with _tracer.start_as_current_span("index") as span:
+            try:
+                req = IndexChunkRequest(
+                    workspace_id=payload["workspace_id"],
+                    chunk_id=payload["chunk_id"],
+                    task_id=payload.get("task_id"),
                 )
-            ],
-            wait=False,
+                # Retrieve payload metadata and vector from S3, then upsert
+                payload_key = (
+                    f"{req.workspace_id}/payloads/{req.chunk_id}.json"
+                )
+                _ta = time.time()
+                obj = s3.get_object(Bucket=S3_BUCKET, Key=payload_key)
+                payload_bytes = obj["Body"].read()
+                S3_GET_LAT.record(
+                    time.time() - _ta,
+                    attributes=service_attrs,
+                    context=otel_context.get_current(),
+                )
+                PAYLOAD_IN.add(
+                    len(payload_bytes),
+                    attributes={"stage": "index", **service_attrs},
+                )
+                chunk_payload = json.loads(payload_bytes.decode("utf-8"))
+
+                vec_key = f"{req.workspace_id}/vectors/{req.chunk_id}.vec"
+                _tb = time.time()
+                vec_obj = s3.get_object(Bucket=S3_BUCKET, Key=vec_key)
+                vec_bytes = vec_obj["Body"].read()
+                S3_GET_LAT.record(
+                    time.time() - _tb,
+                    attributes=service_attrs,
+                    context=otel_context.get_current(),
+                )
+                VECTOR_IN.add(
+                    len(vec_bytes),
+                    attributes={"stage": "index", **service_attrs},
+                )
+                try:
+                    embedding = json.loads(vec_bytes.decode("utf-8"))
+                except Exception:
+                    # If stored in another format in the future,
+                    # handle accordingly
+                    raise ValueError("Invalid vector file content")
+
+                if not isinstance(embedding, list) or not embedding:
+                    raise ValueError("Missing or invalid embedding vector")
+
+                # Optional: record vector dimension
+                try:
+                    VEC_DIM.record(
+                        len(embedding),
+                        attributes=service_attrs,
+                        context=otel_context.get_current(),
+                    )
+                    if len(embedding) != 768:
+                        VEC_DIM_MISMATCH.add(1, attributes=service_attrs)
+                except Exception:
+                    pass
+
+                # Upsert to Qdrant
+                _tu = time.time()
+                qdrant_client.upsert(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    points=[
+                        models.PointStruct(
+                            id=chunk_payload.get("chunk_id"),
+                            vector=embedding,
+                            payload=chunk_payload,
+                        )
+                    ],
+                    wait=False,
+                )
+                UP_LAT.record(
+                    time.time() - _tu,
+                    attributes=service_attrs,
+                    context=otel_context.get_current(),
+                )
+                UPserts.add(1, attributes=service_attrs)
+
+                # Queue wait if provided
+                sched_ms = payload.get("scheduled_start_timestamp")
+                start_ms = int(t0 * 1000)
+                if sched_ms is not None:
+                    qwait = max(0.0, (sched_ms - start_ms) / 1000.0)
+                    QWAIT.record(
+                        qwait,
+                        attributes=service_attrs,
+                        context=otel_context.get_current(),
+                    )
+
+                result = {
+                    "success": True,
+                    "chunk_id": chunk_payload.get("chunk_id"),
+                    "workspace_id": req.workspace_id,
+                    "_end_ts": time.time(),
+                }
+                IDX_DONE.add(1, attributes={**service_attrs, "status_code": 2})
+                return result
+            except Exception as e:
+                IDX_ERRS.add(
+                    1, attributes={**service_attrs, "error": type(e).__name__}
+                )
+                span.record_exception(e)
+                raise
+            finally:
+                IDX_LAT.record(
+                    time.time() - t0,
+                    attributes=service_attrs,
+                    context=otel_context.get_current(),
+                )
+
+    result = await manager.execute_task(input, work)
+    # Observe ack lag if the worker returned end timestamp
+    end_ts = result.get("_end_ts") if isinstance(result, dict) else None
+    if isinstance(end_ts, (int, float)):
+        ACK_LAG.record(
+            max(0.0, time.time() - float(end_ts)),
+            attributes={"stage": "index", **service_attrs},
+            context=otel_context.get_current(),
         )
-
-        return {
-            "success": True,
-            "chunk_id": chunk_payload.get("chunk_id"),
-            "workspace_id": req.workspace_id,
-        }
-
-    return await manager.execute_task(input, work)
+    return result

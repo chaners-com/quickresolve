@@ -240,6 +240,8 @@ services:
       INDEX_MAX_CONCURRENT: "3"
       OTEL_SERVICE_NAME: indexing-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      RESOURCE_SAMPLER_ENABLED: "true"
+      RESOURCE_SAMPLER_HZ: "1"
     depends_on:
       - qdrant
       - minio

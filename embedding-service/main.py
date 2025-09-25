@@ -8,6 +8,8 @@ Does not store vectors in payload JSON.
 import asyncio
 import json
 import os
+import time
+import threading
 from typing import Optional, Union
 
 import boto3
@@ -17,6 +19,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from task_broker_client import TaskBrokerClient
 from task_manager import TaskManager
+
+# OpenTelemetry (metrics + traces)
+from opentelemetry import context as otel_context
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+    OTLPMetricExporter,
+)
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+    OTLPSpanExporter,
+)
+from opentelemetry.metrics import get_meter, set_meter_provider, Observation
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 
 class FileInfo(BaseModel):
@@ -78,6 +96,77 @@ manager = TaskManager(
     broker, max_concurrent=int(os.getenv("EMBED_MAX_CONCURRENT", "20"))
 )
 
+# OpenTelemetry init
+OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "embedding-service")
+OTLP_ENDPOINT = os.getenv(
+    "OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317"
+)
+OTEL_METRICS_EXPORT_INTERVAL_MS = int(
+    os.getenv("OTEL_METRICS_EXPORT_INTERVAL_MS", "10000")
+)
+RESOURCE_SAMPLER_ENABLED = os.getenv("RESOURCE_SAMPLER_ENABLED", "true").lower() == "true"
+RESOURCE_SAMPLER_HZ = float(os.getenv("RESOURCE_SAMPLER_HZ", "1"))
+
+_resource = Resource.create({"service.name": OTEL_SERVICE_NAME})
+_tracer_provider = TracerProvider(resource=_resource)
+_tracer_provider.add_span_processor(
+    BatchSpanProcessor(OTLPSpanExporter(endpoint=OTLP_ENDPOINT))
+)
+trace.set_tracer_provider(_tracer_provider)
+_tracer = trace.get_tracer(__name__)
+_metric_reader = PeriodicExportingMetricReader(
+    OTLPMetricExporter(endpoint=OTLP_ENDPOINT),
+    export_interval_millis=OTEL_METRICS_EXPORT_INTERVAL_MS,
+)
+_meter_provider = MeterProvider(
+    resource=_resource, metric_readers=[_metric_reader]
+)
+set_meter_provider(_meter_provider)
+_meter = get_meter(__name__)
+
+# Instruments
+EMB_REQS = _meter.create_counter("embedding_requests_total")
+EMB_DONE = _meter.create_counter("embedding_completions_total")
+EMB_ERRS = _meter.create_counter("embedding_errors_total")
+EMB_LAT = _meter.create_histogram("embedding_latency_seconds", unit="s")
+QWAIT = _meter.create_histogram("queue_wait_seconds", unit="s")
+ACK_LAG = _meter.create_histogram("ack_lag_seconds", unit="s")
+
+S3_GET_LAT = _meter.create_histogram("s3_download_latency_seconds", unit="s")
+S3_PUT_LAT = _meter.create_histogram("s3_upload_latency_seconds", unit="s")
+S3_PUT_VEC_LAT = _meter.create_histogram("s3_upload_vector_latency_seconds", unit="s")
+PAYLOAD_IN = _meter.create_counter("payload_bytes_in_total", unit="By")
+PAYLOAD_OUT = _meter.create_counter("payload_bytes_out_total", unit="By")
+VECTOR_OUT = _meter.create_counter("vector_bytes_out_total", unit="By")
+S3_GET_ERRS = _meter.create_counter("s3_get_errors_total")
+S3_PUT_ERRS = _meter.create_counter("s3_put_errors_total")
+
+EMB_VECTORS = _meter.create_counter("embedding_vectors_total")
+VEC_DIM = _meter.create_histogram("embedding_vector_dim")
+VEC_DIM_MISMATCH = _meter.create_counter("embedding_vector_dim_mismatch_total")
+
+# Resource usage instruments
+CPU_PCT = _meter.create_histogram("process_cpu_percent", unit="%")
+MEM_RSS = _meter.create_histogram("process_memory_rss_bytes", unit="By")
+IO_RD_BPS = _meter.create_histogram("process_io_read_bytes_per_second", unit="By/s")
+IO_WR_BPS = _meter.create_histogram("process_io_write_bytes_per_second", unit="By/s")
+CPU_PCT_PEAK = _meter.create_histogram("process_cpu_percent_peak", unit="%")
+MEM_RSS_PEAK = _meter.create_histogram("process_memory_rss_peak_bytes", unit="By")
+IO_RD_BPS_PEAK = _meter.create_histogram("process_io_read_bps_peak", unit="By/s")
+IO_WR_BPS_PEAK = _meter.create_histogram("process_io_write_bps_peak", unit="By/s")
+
+# Info-style model gauge
+
+def _model_info_callback(options):
+    try:
+        return [Observation(1, {"name": embedding_model, "service": OTEL_SERVICE_NAME})]
+    except Exception:
+        return []
+
+EMB_MODEL_INFO = _meter.create_observable_gauge(
+    "embedding_model_info", callbacks=[_model_info_callback]
+)
+
 
 @app.get("/health")
 async def health():
@@ -99,78 +188,252 @@ def _retry_backoff_delays(max_attempts: int = 3) -> list[float]:
     return [0.5 * (2**i) for i in range(max_attempts)]
 
 
+def _sample_resources_thread(stop_event: threading.Event, attributes: dict, hz: float, ctx):
+    import psutil  # local import to avoid import if not used
+    p = psutil.Process(os.getpid())
+    try:
+        p.cpu_percent(None)
+    except Exception:
+        pass
+    prev_time = time.time()
+    try:
+        io_prev = p.io_counters()
+        rd_prev = io_prev.read_bytes
+        wr_prev = io_prev.write_bytes
+    except Exception:
+        rd_prev = 0
+        wr_prev = 0
+
+    cpu_peak = 0.0
+    mem_peak = 0
+    rd_bps_peak = 0.0
+    wr_bps_peak = 0.0
+
+    interval = max(0.05, 1.0 / max(0.1, hz))
+    while not stop_event.is_set():
+        t1 = time.time()
+        dt = max(1e-6, t1 - prev_time)
+        try:
+            cpu = float(p.cpu_percent(None))
+        except Exception:
+            cpu = 0.0
+        try:
+            mem = int(p.memory_info().rss)
+        except Exception:
+            mem = 0
+        try:
+            io_now = p.io_counters()
+            rd = int(io_now.read_bytes)
+            wr = int(io_now.write_bytes)
+            rd_bps = max(0.0, (rd - rd_prev) / dt)
+            wr_bps = max(0.0, (wr - wr_prev) / dt)
+            rd_prev, wr_prev = rd, wr
+        except Exception:
+            rd_bps = 0.0
+            wr_bps = 0.0
+
+        cpu_peak = max(cpu_peak, cpu)
+        mem_peak = max(mem_peak, mem)
+        rd_bps_peak = max(rd_bps_peak, rd_bps)
+        wr_bps_peak = max(wr_bps_peak, wr_bps)
+
+        try:
+            CPU_PCT.record(cpu, attributes=attributes, context=ctx)
+            MEM_RSS.record(mem, attributes=attributes, context=ctx)
+            IO_RD_BPS.record(rd_bps, attributes=attributes, context=ctx)
+            IO_WR_BPS.record(wr_bps, attributes=attributes, context=ctx)
+        except Exception:
+            pass
+
+        stop_event.wait(max(0.0, interval - (time.time() - t1)))
+        prev_time = t1
+
+    try:
+        CPU_PCT_PEAK.record(cpu_peak, attributes=attributes, context=ctx)
+        MEM_RSS_PEAK.record(mem_peak, attributes=attributes, context=ctx)
+        IO_RD_BPS_PEAK.record(rd_bps_peak, attributes=attributes, context=ctx)
+        IO_WR_BPS_PEAK.record(wr_bps_peak, attributes=attributes, context=ctx)
+    except Exception:
+        pass
+
+
 @app.post("/embed-chunk")
 async def consume(input: dict):
+    service_attrs = {
+        "service": OTEL_SERVICE_NAME,
+    }
+    EMB_REQS.add(1, attributes=service_attrs)
+
     async def work(payload: dict) -> dict:
-        req = EmbedChunkRequest(
-            workspace_id=payload["workspace_id"],
-            chunk_id=payload["chunk_id"],
-            task_id=payload.get("task_id"),
-        )
-        # Retrieve canonical chunk payload from S3
-        payload_key = f"{req.workspace_id}/payloads/{req.chunk_id}.json"
-        obj = s3.get_object(Bucket=S3_BUCKET, Key=payload_key)
-        payload_bytes = obj["Body"].read()
-        chunk_payload = json.loads(payload_bytes.decode("utf-8"))
-
-        text = chunk_payload.get("content", "")
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("Empty content in payload")
-
-        vec = genai.embed_content(
-            model=embedding_model,
-            content=text,
-            task_type="retrieval_document",
-        )["embedding"]
-
-        # Ensure version.embedding_model
-        # is populated (in payload metadata only)
-        version = chunk_payload.get("version") or {}
-        if isinstance(version, dict):
-            version["embedding_model"] = embedding_model
-            chunk_payload["version"] = version
-
-        # Persist payload (without vector) to keep metadata updated
-        body = json.dumps(chunk_payload).encode("utf-8")
-        last_err: Exception | None = None
-        for delay in _retry_backoff_delays(3):
-            try:
-                s3.put_object(Bucket=S3_BUCKET, Key=payload_key, Body=body)
-                break
-            except Exception as e:
-                last_err = e
-                if delay > 0:
-                    await asyncio.sleep(delay)
-        else:
-            raise RuntimeError(
-                f"Failed to persist payload metadata to S3: {last_err}"
-            )
-
-        # Write vector file separately under
-        # vectors/<chunk_id>.vec as JSON array
-        vec_key = f"{req.workspace_id}/vectors/{req.chunk_id}.vec"
-        vec_body = json.dumps(vec).encode("utf-8")
-        last_err = None
-        for delay in _retry_backoff_delays(3):
-            try:
-                s3.put_object(
-                    Bucket=S3_BUCKET,
-                    Key=vec_key,
-                    Body=vec_body,
-                    ContentType="application/octet-stream",
+        t0 = time.time()
+        with _tracer.start_as_current_span("embed") as span:
+            sampler_thread = None
+            stop_event = threading.Event()
+            ctx = otel_context.get_current()
+            res_attrs = {"stage": "embed", **service_attrs}
+            if RESOURCE_SAMPLER_ENABLED:
+                sampler_thread = threading.Thread(
+                    target=_sample_resources_thread,
+                    args=(stop_event, res_attrs, RESOURCE_SAMPLER_HZ, ctx),
+                    daemon=True,
                 )
-                break
+                sampler_thread.start()
+            try:
+                req = EmbedChunkRequest(
+                    workspace_id=payload["workspace_id"],
+                    chunk_id=payload["chunk_id"],
+                    task_id=payload.get("task_id"),
+                )
+
+                # Queue wait if provided
+                sched_ms = payload.get("scheduled_start_timestamp")
+                start_ms = int(t0 * 1000)
+                if sched_ms is not None:
+                    qwait = max(0.0, (sched_ms - start_ms) / 1000.0)
+                    QWAIT.record(
+                        qwait,
+                        attributes=service_attrs,
+                        context=otel_context.get_current(),
+                    )
+
+                # Retrieve canonical chunk payload from S3
+                payload_key = f"{req.workspace_id}/payloads/{req.chunk_id}.json"
+                _ta = time.time()
+                try:
+                    obj = s3.get_object(Bucket=S3_BUCKET, Key=payload_key)
+                except Exception as e:
+                    S3_GET_ERRS.add(1, attributes={**service_attrs, "error": type(e).__name__})
+                    raise
+                payload_bytes = obj["Body"].read()
+                S3_GET_LAT.record(
+                    time.time() - _ta,
+                    attributes=service_attrs,
+                    context=otel_context.get_current(),
+                )
+                PAYLOAD_IN.add(
+                    len(payload_bytes),
+                    attributes={"stage": "embed", **service_attrs},
+                )
+                chunk_payload = json.loads(payload_bytes.decode("utf-8"))
+
+                text = chunk_payload.get("content", "")
+                if not isinstance(text, str) or not text.strip():
+                    raise ValueError("Empty content in payload")
+
+                vec = genai.embed_content(
+                    model=embedding_model,
+                    content=text,
+                    task_type="retrieval_document",
+                )["embedding"]
+
+                # Count and dimension
+                try:
+                    EMB_VECTORS.add(1, attributes={**service_attrs, "embedding_model": embedding_model})
+                    VEC_DIM.record(len(vec or []), attributes=service_attrs, context=otel_context.get_current())
+                    if len(vec or []) != 768:
+                        VEC_DIM_MISMATCH.add(1, attributes=service_attrs)
+                except Exception:
+                    pass
+
+                # Ensure version.embedding_model is populated
+                version = chunk_payload.get("version") or {}
+                if isinstance(version, dict):
+                    version["embedding_model"] = embedding_model
+                    chunk_payload["version"] = version
+
+                # Persist payload (without vector) to keep metadata updated
+                body = json.dumps(chunk_payload).encode("utf-8")
+                last_err: Exception | None = None
+                _tb = time.time()
+                for delay in _retry_backoff_delays(3):
+                    try:
+                        s3.put_object(Bucket=S3_BUCKET, Key=payload_key, Body=body)
+                        break
+                    except Exception as e:
+                        last_err = e
+                        S3_PUT_ERRS.add(1, attributes={**service_attrs, "error": type(e).__name__})
+                        if delay > 0:
+                            await asyncio.sleep(delay)
+                else:
+                    raise RuntimeError(
+                        f"Failed to persist payload metadata to S3: {last_err}"
+                    )
+                S3_PUT_LAT.record(
+                    time.time() - _tb,
+                    attributes=service_attrs,
+                    context=otel_context.get_current(),
+                )
+                PAYLOAD_OUT.add(
+                    len(body),
+                    attributes={"stage": "embed", **service_attrs},
+                )
+
+                # Write vector file separately under vectors/<chunk_id>.vec as JSON array
+                vec_key = f"{req.workspace_id}/vectors/{req.chunk_id}.vec"
+                vec_body = json.dumps(vec).encode("utf-8")
+                last_err = None
+                _tc = time.time()
+                for delay in _retry_backoff_delays(3):
+                    try:
+                        s3.put_object(
+                            Bucket=S3_BUCKET,
+                            Key=vec_key,
+                            Body=vec_body,
+                            ContentType="application/octet-stream",
+                        )
+                        break
+                    except Exception as e:
+                        last_err = e
+                        S3_PUT_ERRS.add(1, attributes={**service_attrs, "error": type(e).__name__})
+                        if delay > 0:
+                            await asyncio.sleep(delay)
+                else:
+                    raise RuntimeError(f"Failed to persist vector to S3: {last_err}")
+                S3_PUT_VEC_LAT.record(
+                    time.time() - _tc,
+                    attributes=service_attrs,
+                    context=otel_context.get_current(),
+                )
+                VECTOR_OUT.add(
+                    len(vec_body),
+                    attributes={"stage": "embed", **service_attrs},
+                )
+
+                result = {
+                    "success": True,
+                    "chunk_id": chunk_payload.get("chunk_id"),
+                    "workspace_id": req.workspace_id,
+                    "_end_ts": time.time(),
+                }
+                EMB_DONE.add(1, attributes={**service_attrs, "status_code": 2})
+                return result
             except Exception as e:
-                last_err = e
-                if delay > 0:
-                    await asyncio.sleep(delay)
-        else:
-            raise RuntimeError(f"Failed to persist vector to S3: {last_err}")
+                EMB_ERRS.add(
+                    1, attributes={**service_attrs, "error": type(e).__name__}
+                )
+                span.record_exception(e)
+                raise
+            finally:
+                if RESOURCE_SAMPLER_ENABLED:
+                    try:
+                        stop_event.set()
+                        if sampler_thread is not None:
+                            sampler_thread.join(timeout=2.0)
+                    except Exception:
+                        pass
+                EMB_LAT.record(
+                    time.time() - t0,
+                    attributes=service_attrs,
+                    context=otel_context.get_current(),
+                )
 
-        return {
-            "success": True,
-            "chunk_id": chunk_payload.get("chunk_id"),
-            "workspace_id": req.workspace_id,
-        }
-
-    return await manager.execute_task(input, work)
+    result = await manager.execute_task(input, work)
+    # Observe ack lag if the worker returned end timestamp
+    end_ts = result.get("_end_ts") if isinstance(result, dict) else None
+    if isinstance(end_ts, (int, float)):
+        ACK_LAG.record(
+            max(0.0, time.time() - float(end_ts)),
+            attributes={"stage": "embed", **service_attrs},
+            context=otel_context.get_current(),
+        )
+    return result

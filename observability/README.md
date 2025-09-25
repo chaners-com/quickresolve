@@ -16,6 +16,7 @@ This guide explains how to run the OpenTelemetry Collector and Grafana backends 
 - `observability/mimir.yaml`: Mimir configuration (filesystem storage)
 - `observability/grafana/datasources/datasources.yaml`: Datasource provisioning (Mimir + Tempo)
 - `observability/grafana/provisioning/dashboards/dashboards.yaml`: Dashboards auto-loading (drop JSON in `/var/lib/grafana/dashboards`)
+- Beginner guide: `docs/observability/grafana-user-guide.md` (how to access Grafana, query metrics, view traces, and use exemplars)
 
 #### Docker Compose additions
 Add the following services to your compose (already configured by the repo edits):

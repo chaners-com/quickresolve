@@ -164,7 +164,12 @@ def _model_info_callback(options):
     try:
         return [
             Observation(
-                1, {"name": embedding_model, "service": OTEL_SERVICE_NAME}
+                1,
+                {
+                    "name": embedding_model,
+                    "version": embedding_model,
+                    "service": OTEL_SERVICE_NAME,
+                },
             )
         ]
     except Exception:

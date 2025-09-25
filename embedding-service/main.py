@@ -106,6 +106,7 @@ OTEL_METRICS_EXPORT_INTERVAL_MS = int(
 )
 RESOURCE_SAMPLER_ENABLED = os.getenv("RESOURCE_SAMPLER_ENABLED", "true").lower() == "true"
 RESOURCE_SAMPLER_HZ = float(os.getenv("RESOURCE_SAMPLER_HZ", "1"))
+GPU_METRICS_ENABLED = os.getenv("GPU_METRICS_ENABLED", "false").lower() == "true"
 
 _resource = Resource.create({"service.name": OTEL_SERVICE_NAME})
 _tracer_provider = TracerProvider(resource=_resource)
@@ -154,6 +155,10 @@ CPU_PCT_PEAK = _meter.create_histogram("process_cpu_percent_peak", unit="%")
 MEM_RSS_PEAK = _meter.create_histogram("process_memory_rss_peak_bytes", unit="By")
 IO_RD_BPS_PEAK = _meter.create_histogram("process_io_read_bps_peak", unit="By/s")
 IO_WR_BPS_PEAK = _meter.create_histogram("process_io_write_bps_peak", unit="By/s")
+GPU_UTIL = _meter.create_histogram("gpu_util_percent", unit="%")
+GPU_MEM = _meter.create_histogram("gpu_memory_bytes", unit="By")
+GPU_UTIL_PEAK = _meter.create_histogram("gpu_util_percent_peak", unit="%")
+GPU_MEM_PEAK = _meter.create_histogram("gpu_memory_peak_bytes", unit="By")
 
 # Info-style model gauge
 
@@ -209,6 +214,24 @@ def _sample_resources_thread(stop_event: threading.Event, attributes: dict, hz: 
     rd_bps_peak = 0.0
     wr_bps_peak = 0.0
 
+    # GPU setup
+    gpu_available = False
+    gpu_handles = []
+    try:
+        if GPU_METRICS_ENABLED:
+            import pynvml  # type: ignore
+            pynvml.nvmlInit()
+            device_count = pynvml.nvmlDeviceGetCount()
+            for i in range(device_count):
+                gpu_handles.append(pynvml.nvmlDeviceGetHandleByIndex(i))
+            gpu_available = device_count > 0
+    except Exception:
+        gpu_available = False
+        gpu_handles = []
+
+    gpu_util_peaks = {}
+    gpu_mem_peaks = {}
+
     interval = max(0.05, 1.0 / max(0.1, hz))
     while not stop_event.is_set():
         t1 = time.time()
@@ -245,6 +268,21 @@ def _sample_resources_thread(stop_event: threading.Event, attributes: dict, hz: 
         except Exception:
             pass
 
+        if gpu_available:
+            try:
+                import pynvml  # type: ignore
+                for idx, h in enumerate(gpu_handles):
+                    util = float(pynvml.nvmlDeviceGetUtilizationRates(h).gpu)
+                    meminfo = pynvml.nvmlDeviceGetMemoryInfo(h)
+                    mem_used = int(meminfo.used)
+                    dev_attrs = {**attributes, "device": str(idx)}
+                    GPU_UTIL.record(util, attributes=dev_attrs, context=ctx)
+                    GPU_MEM.record(mem_used, attributes=dev_attrs, context=ctx)
+                    gpu_util_peaks[idx] = max(gpu_util_peaks.get(idx, 0.0), util)
+                    gpu_mem_peaks[idx] = max(gpu_mem_peaks.get(idx, 0), mem_used)
+            except Exception:
+                pass
+
         stop_event.wait(max(0.0, interval - (time.time() - t1)))
         prev_time = t1
 
@@ -253,6 +291,20 @@ def _sample_resources_thread(stop_event: threading.Event, attributes: dict, hz: 
         MEM_RSS_PEAK.record(mem_peak, attributes=attributes, context=ctx)
         IO_RD_BPS_PEAK.record(rd_bps_peak, attributes=attributes, context=ctx)
         IO_WR_BPS_PEAK.record(wr_bps_peak, attributes=attributes, context=ctx)
+        if gpu_available:
+            for idx, util_peak in gpu_util_peaks.items():
+                dev_attrs = {**attributes, "device": str(idx)}
+                GPU_UTIL_PEAK.record(util_peak, attributes=dev_attrs, context=ctx)
+            for idx, mem_peak_val in gpu_mem_peaks.items():
+                dev_attrs = {**attributes, "device": str(idx)}
+                GPU_MEM_PEAK.record(mem_peak_val, attributes=dev_attrs, context=ctx)
+    except Exception:
+        pass
+
+    try:
+        if gpu_available:
+            import pynvml  # type: ignore
+            pynvml.nvmlShutdown()
     except Exception:
         pass
 

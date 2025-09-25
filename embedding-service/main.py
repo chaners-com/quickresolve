@@ -9,16 +9,16 @@ import asyncio
 import json
 import os
 import time
-import threading
 from typing import Optional, Union
 
 import boto3
 import google.generativeai as genai
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from task_broker_client import TaskBrokerClient
-from task_manager import TaskManager
+from observability_utils import (
+    start_process_resource_metrics,
+    stop_resource_sampler,
+)
 
 # OpenTelemetry (metrics + traces)
 from opentelemetry import context as otel_context
@@ -29,12 +29,15 @@ from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
     OTLPSpanExporter,
 )
-from opentelemetry.metrics import get_meter, set_meter_provider, Observation
+from opentelemetry.metrics import Observation, get_meter, set_meter_provider
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from pydantic import BaseModel
+from task_broker_client import TaskBrokerClient
+from task_manager import TaskManager
 
 
 class FileInfo(BaseModel):
@@ -104,9 +107,13 @@ OTLP_ENDPOINT = os.getenv(
 OTEL_METRICS_EXPORT_INTERVAL_MS = int(
     os.getenv("OTEL_METRICS_EXPORT_INTERVAL_MS", "10000")
 )
-RESOURCE_SAMPLER_ENABLED = os.getenv("RESOURCE_SAMPLER_ENABLED", "true").lower() == "true"
+RESOURCE_SAMPLER_ENABLED = (
+    os.getenv("RESOURCE_SAMPLER_ENABLED", "true").lower() == "true"
+)
 RESOURCE_SAMPLER_HZ = float(os.getenv("RESOURCE_SAMPLER_HZ", "1"))
-GPU_METRICS_ENABLED = os.getenv("GPU_METRICS_ENABLED", "false").lower() == "true"
+GPU_METRICS_ENABLED = (
+    os.getenv("GPU_METRICS_ENABLED", "false").lower() == "true"
+)
 
 _resource = Resource.create({"service.name": OTEL_SERVICE_NAME})
 _tracer_provider = TracerProvider(resource=_resource)
@@ -135,7 +142,9 @@ ACK_LAG = _meter.create_histogram("ack_lag_seconds", unit="s")
 
 S3_GET_LAT = _meter.create_histogram("s3_download_latency_seconds", unit="s")
 S3_PUT_LAT = _meter.create_histogram("s3_upload_latency_seconds", unit="s")
-S3_PUT_VEC_LAT = _meter.create_histogram("s3_upload_vector_latency_seconds", unit="s")
+S3_PUT_VEC_LAT = _meter.create_histogram(
+    "s3_upload_vector_latency_seconds", unit="s"
+)
 PAYLOAD_IN = _meter.create_counter("payload_bytes_in_total", unit="By")
 PAYLOAD_OUT = _meter.create_counter("payload_bytes_out_total", unit="By")
 VECTOR_OUT = _meter.create_counter("vector_bytes_out_total", unit="By")
@@ -146,27 +155,21 @@ EMB_VECTORS = _meter.create_counter("embedding_vectors_total")
 VEC_DIM = _meter.create_histogram("embedding_vector_dim")
 VEC_DIM_MISMATCH = _meter.create_counter("embedding_vector_dim_mismatch_total")
 
-# Resource usage instruments
-CPU_PCT = _meter.create_histogram("process_cpu_percent", unit="%")
-MEM_RSS = _meter.create_histogram("process_memory_rss_bytes", unit="By")
-IO_RD_BPS = _meter.create_histogram("process_io_read_bytes_per_second", unit="By/s")
-IO_WR_BPS = _meter.create_histogram("process_io_write_bytes_per_second", unit="By/s")
-CPU_PCT_PEAK = _meter.create_histogram("process_cpu_percent_peak", unit="%")
-MEM_RSS_PEAK = _meter.create_histogram("process_memory_rss_peak_bytes", unit="By")
-IO_RD_BPS_PEAK = _meter.create_histogram("process_io_read_bps_peak", unit="By/s")
-IO_WR_BPS_PEAK = _meter.create_histogram("process_io_write_bps_peak", unit="By/s")
-GPU_UTIL = _meter.create_histogram("gpu_util_percent", unit="%")
-GPU_MEM = _meter.create_histogram("gpu_memory_bytes", unit="By")
-GPU_UTIL_PEAK = _meter.create_histogram("gpu_util_percent_peak", unit="%")
-GPU_MEM_PEAK = _meter.create_histogram("gpu_memory_peak_bytes", unit="By")
+# Resource usage metrics handled by shared utility
 
 # Info-style model gauge
 
+
 def _model_info_callback(options):
     try:
-        return [Observation(1, {"name": embedding_model, "service": OTEL_SERVICE_NAME})]
+        return [
+            Observation(
+                1, {"name": embedding_model, "service": OTEL_SERVICE_NAME}
+            )
+        ]
     except Exception:
         return []
+
 
 EMB_MODEL_INFO = _meter.create_observable_gauge(
     "embedding_model_info", callbacks=[_model_info_callback]
@@ -193,122 +196,6 @@ def _retry_backoff_delays(max_attempts: int = 3) -> list[float]:
     return [0.5 * (2**i) for i in range(max_attempts)]
 
 
-def _sample_resources_thread(stop_event: threading.Event, attributes: dict, hz: float, ctx):
-    import psutil  # local import to avoid import if not used
-    p = psutil.Process(os.getpid())
-    try:
-        p.cpu_percent(None)
-    except Exception:
-        pass
-    prev_time = time.time()
-    try:
-        io_prev = p.io_counters()
-        rd_prev = io_prev.read_bytes
-        wr_prev = io_prev.write_bytes
-    except Exception:
-        rd_prev = 0
-        wr_prev = 0
-
-    cpu_peak = 0.0
-    mem_peak = 0
-    rd_bps_peak = 0.0
-    wr_bps_peak = 0.0
-
-    # GPU setup
-    gpu_available = False
-    gpu_handles = []
-    try:
-        if GPU_METRICS_ENABLED:
-            import pynvml  # type: ignore
-            pynvml.nvmlInit()
-            device_count = pynvml.nvmlDeviceGetCount()
-            for i in range(device_count):
-                gpu_handles.append(pynvml.nvmlDeviceGetHandleByIndex(i))
-            gpu_available = device_count > 0
-    except Exception:
-        gpu_available = False
-        gpu_handles = []
-
-    gpu_util_peaks = {}
-    gpu_mem_peaks = {}
-
-    interval = max(0.05, 1.0 / max(0.1, hz))
-    while not stop_event.is_set():
-        t1 = time.time()
-        dt = max(1e-6, t1 - prev_time)
-        try:
-            cpu = float(p.cpu_percent(None))
-        except Exception:
-            cpu = 0.0
-        try:
-            mem = int(p.memory_info().rss)
-        except Exception:
-            mem = 0
-        try:
-            io_now = p.io_counters()
-            rd = int(io_now.read_bytes)
-            wr = int(io_now.write_bytes)
-            rd_bps = max(0.0, (rd - rd_prev) / dt)
-            wr_bps = max(0.0, (wr - wr_prev) / dt)
-            rd_prev, wr_prev = rd, wr
-        except Exception:
-            rd_bps = 0.0
-            wr_bps = 0.0
-
-        cpu_peak = max(cpu_peak, cpu)
-        mem_peak = max(mem_peak, mem)
-        rd_bps_peak = max(rd_bps_peak, rd_bps)
-        wr_bps_peak = max(wr_bps_peak, wr_bps)
-
-        try:
-            CPU_PCT.record(cpu, attributes=attributes, context=ctx)
-            MEM_RSS.record(mem, attributes=attributes, context=ctx)
-            IO_RD_BPS.record(rd_bps, attributes=attributes, context=ctx)
-            IO_WR_BPS.record(wr_bps, attributes=attributes, context=ctx)
-        except Exception:
-            pass
-
-        if gpu_available:
-            try:
-                import pynvml  # type: ignore
-                for idx, h in enumerate(gpu_handles):
-                    util = float(pynvml.nvmlDeviceGetUtilizationRates(h).gpu)
-                    meminfo = pynvml.nvmlDeviceGetMemoryInfo(h)
-                    mem_used = int(meminfo.used)
-                    dev_attrs = {**attributes, "device": str(idx)}
-                    GPU_UTIL.record(util, attributes=dev_attrs, context=ctx)
-                    GPU_MEM.record(mem_used, attributes=dev_attrs, context=ctx)
-                    gpu_util_peaks[idx] = max(gpu_util_peaks.get(idx, 0.0), util)
-                    gpu_mem_peaks[idx] = max(gpu_mem_peaks.get(idx, 0), mem_used)
-            except Exception:
-                pass
-
-        stop_event.wait(max(0.0, interval - (time.time() - t1)))
-        prev_time = t1
-
-    try:
-        CPU_PCT_PEAK.record(cpu_peak, attributes=attributes, context=ctx)
-        MEM_RSS_PEAK.record(mem_peak, attributes=attributes, context=ctx)
-        IO_RD_BPS_PEAK.record(rd_bps_peak, attributes=attributes, context=ctx)
-        IO_WR_BPS_PEAK.record(wr_bps_peak, attributes=attributes, context=ctx)
-        if gpu_available:
-            for idx, util_peak in gpu_util_peaks.items():
-                dev_attrs = {**attributes, "device": str(idx)}
-                GPU_UTIL_PEAK.record(util_peak, attributes=dev_attrs, context=ctx)
-            for idx, mem_peak_val in gpu_mem_peaks.items():
-                dev_attrs = {**attributes, "device": str(idx)}
-                GPU_MEM_PEAK.record(mem_peak_val, attributes=dev_attrs, context=ctx)
-    except Exception:
-        pass
-
-    try:
-        if gpu_available:
-            import pynvml  # type: ignore
-            pynvml.nvmlShutdown()
-    except Exception:
-        pass
-
-
 @app.post("/embed-chunk")
 async def consume(input: dict):
     service_attrs = {
@@ -319,17 +206,15 @@ async def consume(input: dict):
     async def work(payload: dict) -> dict:
         t0 = time.time()
         with _tracer.start_as_current_span("embed") as span:
-            sampler_thread = None
-            stop_event = threading.Event()
-            ctx = otel_context.get_current()
-            res_attrs = {"stage": "embed", **service_attrs}
+            sampler_handle = None
             if RESOURCE_SAMPLER_ENABLED:
-                sampler_thread = threading.Thread(
-                    target=_sample_resources_thread,
-                    args=(stop_event, res_attrs, RESOURCE_SAMPLER_HZ, ctx),
-                    daemon=True,
+                sampler_handle = start_process_resource_metrics(
+                    meter=_meter,
+                    base_attributes=service_attrs,
+                    stage="embed",
+                    hz=RESOURCE_SAMPLER_HZ,
+                    enable_gpu=GPU_METRICS_ENABLED,
                 )
-                sampler_thread.start()
             try:
                 req = EmbedChunkRequest(
                     workspace_id=payload["workspace_id"],
@@ -349,12 +234,20 @@ async def consume(input: dict):
                     )
 
                 # Retrieve canonical chunk payload from S3
-                payload_key = f"{req.workspace_id}/payloads/{req.chunk_id}.json"
+                payload_key = (
+                    f"{req.workspace_id}/payloads/{req.chunk_id}.json"
+                )
                 _ta = time.time()
                 try:
                     obj = s3.get_object(Bucket=S3_BUCKET, Key=payload_key)
                 except Exception as e:
-                    S3_GET_ERRS.add(1, attributes={**service_attrs, "error": type(e).__name__})
+                    S3_GET_ERRS.add(
+                        1,
+                        attributes={
+                            **service_attrs,
+                            "error": type(e).__name__,
+                        },
+                    )
                     raise
                 payload_bytes = obj["Body"].read()
                 S3_GET_LAT.record(
@@ -380,8 +273,18 @@ async def consume(input: dict):
 
                 # Count and dimension
                 try:
-                    EMB_VECTORS.add(1, attributes={**service_attrs, "embedding_model": embedding_model})
-                    VEC_DIM.record(len(vec or []), attributes=service_attrs, context=otel_context.get_current())
+                    EMB_VECTORS.add(
+                        1,
+                        attributes={
+                            **service_attrs,
+                            "embedding_model": embedding_model,
+                        },
+                    )
+                    VEC_DIM.record(
+                        len(vec or []),
+                        attributes=service_attrs,
+                        context=otel_context.get_current(),
+                    )
                     if len(vec or []) != 768:
                         VEC_DIM_MISMATCH.add(1, attributes=service_attrs)
                 except Exception:
@@ -399,11 +302,19 @@ async def consume(input: dict):
                 _tb = time.time()
                 for delay in _retry_backoff_delays(3):
                     try:
-                        s3.put_object(Bucket=S3_BUCKET, Key=payload_key, Body=body)
+                        s3.put_object(
+                            Bucket=S3_BUCKET, Key=payload_key, Body=body
+                        )
                         break
                     except Exception as e:
                         last_err = e
-                        S3_PUT_ERRS.add(1, attributes={**service_attrs, "error": type(e).__name__})
+                        S3_PUT_ERRS.add(
+                            1,
+                            attributes={
+                                **service_attrs,
+                                "error": type(e).__name__,
+                            },
+                        )
                         if delay > 0:
                             await asyncio.sleep(delay)
                 else:
@@ -420,7 +331,8 @@ async def consume(input: dict):
                     attributes={"stage": "embed", **service_attrs},
                 )
 
-                # Write vector file separately under vectors/<chunk_id>.vec as JSON array
+                # Write vector file separately
+                # under vectors/<chunk_id>.vec as JSON array
                 vec_key = f"{req.workspace_id}/vectors/{req.chunk_id}.vec"
                 vec_body = json.dumps(vec).encode("utf-8")
                 last_err = None
@@ -436,11 +348,19 @@ async def consume(input: dict):
                         break
                     except Exception as e:
                         last_err = e
-                        S3_PUT_ERRS.add(1, attributes={**service_attrs, "error": type(e).__name__})
+                        S3_PUT_ERRS.add(
+                            1,
+                            attributes={
+                                **service_attrs,
+                                "error": type(e).__name__,
+                            },
+                        )
                         if delay > 0:
                             await asyncio.sleep(delay)
                 else:
-                    raise RuntimeError(f"Failed to persist vector to S3: {last_err}")
+                    raise RuntimeError(
+                        f"Failed to persist vector to S3: {last_err}"
+                    )
                 S3_PUT_VEC_LAT.record(
                     time.time() - _tc,
                     attributes=service_attrs,
@@ -466,11 +386,9 @@ async def consume(input: dict):
                 span.record_exception(e)
                 raise
             finally:
-                if RESOURCE_SAMPLER_ENABLED:
+                if RESOURCE_SAMPLER_ENABLED and sampler_handle is not None:
                     try:
-                        stop_event.set()
-                        if sampler_thread is not None:
-                            sampler_thread.join(timeout=2.0)
+                        stop_resource_sampler(sampler_handle)
                     except Exception:
                         pass
                 EMB_LAT.record(

@@ -17,6 +17,7 @@ This guide explains how to run the OpenTelemetry Collector and Grafana backends 
 - `observability/grafana/datasources/datasources.yaml`: Datasource provisioning (Mimir + Tempo)
 - `observability/grafana/provisioning/dashboards/dashboards.yaml`: Dashboards auto-loading (drop JSON in `/var/lib/grafana/dashboards`)
 - Beginner guide: `docs/observability/grafana-user-guide.md` (how to access Grafana, query metrics, view traces, and use exemplars)
+- Shared lib: `libs/observability_utils` (resource sampler + standardized resource instruments)
 
 #### Docker Compose additions
 Add the following services to your compose (already configured by the repo edits):
@@ -29,6 +30,7 @@ Services should export:
 - `OTEL_SERVICE_NAME`
 - `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317`
 - Optional: `OTEL_METRICS_EXPORT_INTERVAL_MS`, histogram view config via code
+- Optional resource sampler envs: `RESOURCE_SAMPLER_ENABLED=true`, `RESOURCE_SAMPLER_HZ=1`, `GPU_METRICS_ENABLED=false`
 
 #### How to use Grafana
 1) Open Grafana at `http://localhost:3000` (default admin/admin)
@@ -74,7 +76,18 @@ sum(rate(stage_requests_total[1m])) by (stage)
 histogram_quantile(0.95, sum(rate(task_peak_rss_bytes_bucket[15m])) by (le, stage))
 ```
 
+#### Shared resource utils (usage)
+- Import in service:
+  - `from observability_utils import build_resource_instruments, start_resource_sampler, stop_resource_sampler`
+- Build instruments once per service: `RI = build_resource_instruments(meter)` and assign to local names to keep queries stable.
+- Start sampler around span:
+  - Define `_tick(sample)` to record CPU/RAM/IO/GPU to your instruments with attributes `{service, stage}` and optional `device` for GPU.
+  - Define `_peaks(peaks)` to record peak histograms at end of task.
+  - `handle = start_resource_sampler(_tick, _peaks, hz=float(os.getenv("RESOURCE_SAMPLER_HZ","1")), enable_gpu=os.getenv("GPU_METRICS_ENABLED","false").lower()=="true")`
+  - On finally: `stop_resource_sampler(handle)`.
+- Metric names/units are standardized across services via the builder. Low-cardinality labels only.
+
 #### Recommendations
-- Keep labels low-cardinality: `stage`, `service`, maybe `collection` for indexing.
+- Keep labels low-cardinality: `stage`, `service`; use `qdrant_collection` only on Qdrant metrics.
 - Configure histogram buckets via OTel Views in code to match useful ranges.
 - If you add exporters (Grafana Cloud), switch Collector `prometheusremotewrite` endpoint and auth headers.

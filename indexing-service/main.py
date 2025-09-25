@@ -8,12 +8,15 @@ import asyncio
 import json
 import os
 import time
-import threading
 from typing import Optional
 
 import boto3
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from observability_utils import (
+    start_process_resource_metrics,
+    stop_resource_sampler,
+)
 
 # OpenTelemetry (metrics + traces)
 from opentelemetry import context as otel_context
@@ -91,9 +94,13 @@ OTLP_ENDPOINT = os.getenv(
 OTEL_METRICS_EXPORT_INTERVAL_MS = int(
     os.getenv("OTEL_METRICS_EXPORT_INTERVAL_MS", "10000")
 )
-RESOURCE_SAMPLER_ENABLED = os.getenv("RESOURCE_SAMPLER_ENABLED", "true").lower() == "true"
+RESOURCE_SAMPLER_ENABLED = (
+    os.getenv("RESOURCE_SAMPLER_ENABLED", "true").lower() == "true"
+)
 RESOURCE_SAMPLER_HZ = float(os.getenv("RESOURCE_SAMPLER_HZ", "1"))
-GPU_METRICS_ENABLED = os.getenv("GPU_METRICS_ENABLED", "false").lower() == "true"
+GPU_METRICS_ENABLED = (
+    os.getenv("GPU_METRICS_ENABLED", "false").lower() == "true"
+)
 
 _resource = Resource.create({"service.name": OTEL_SERVICE_NAME})
 _tracer_provider = TracerProvider(resource=_resource)
@@ -129,19 +136,7 @@ VEC_DIM_MISMATCH = _meter.create_counter("index_vector_dim_mismatch_total")
 QWAIT = _meter.create_histogram("queue_wait_seconds", unit="s")
 ACK_LAG = _meter.create_histogram("ack_lag_seconds", unit="s")
 
-# Resource usage instruments
-CPU_PCT = _meter.create_histogram("process_cpu_percent", unit="%")
-MEM_RSS = _meter.create_histogram("process_memory_rss_bytes", unit="By")
-IO_RD_BPS = _meter.create_histogram("process_io_read_bytes_per_second", unit="By/s")
-IO_WR_BPS = _meter.create_histogram("process_io_write_bytes_per_second", unit="By/s")
-CPU_PCT_PEAK = _meter.create_histogram("process_cpu_percent_peak", unit="%")
-MEM_RSS_PEAK = _meter.create_histogram("process_memory_rss_peak_bytes", unit="By")
-IO_RD_BPS_PEAK = _meter.create_histogram("process_io_read_bps_peak", unit="By/s")
-IO_WR_BPS_PEAK = _meter.create_histogram("process_io_write_bps_peak", unit="By/s")
-GPU_UTIL = _meter.create_histogram("gpu_util_percent", unit="%")
-GPU_MEM = _meter.create_histogram("gpu_memory_bytes", unit="By")
-GPU_UTIL_PEAK = _meter.create_histogram("gpu_util_percent_peak", unit="%")
-GPU_MEM_PEAK = _meter.create_histogram("gpu_memory_peak_bytes", unit="By")
+# Resource usage metrics handled by shared utility
 
 
 @app.get("/health")
@@ -188,123 +183,6 @@ async def on_shutdown():
     await manager.stop()
 
 
-def _sample_resources_thread(stop_event: threading.Event, attributes: dict, hz: float, ctx):
-    import psutil  # local import to avoid import if not used
-    p = psutil.Process(os.getpid())
-    try:
-        p.cpu_percent(None)
-    except Exception:
-        pass
-    prev_time = time.time()
-    try:
-        io_prev = p.io_counters()
-        rd_prev = io_prev.read_bytes
-        wr_prev = io_prev.write_bytes
-    except Exception:
-        rd_prev = 0
-        wr_prev = 0
-
-    cpu_peak = 0.0
-    mem_peak = 0
-    rd_bps_peak = 0.0
-    wr_bps_peak = 0.0
-
-    # GPU setup
-    gpu_available = False
-    gpu_handles = []
-    try:
-        if GPU_METRICS_ENABLED:
-            import pynvml  # type: ignore
-            pynvml.nvmlInit()
-            device_count = pynvml.nvmlDeviceGetCount()
-            for i in range(device_count):
-                gpu_handles.append(pynvml.nvmlDeviceGetHandleByIndex(i))
-            gpu_available = device_count > 0
-    except Exception:
-        gpu_available = False
-        gpu_handles = []
-
-    gpu_util_peaks = {}
-    gpu_mem_peaks = {}
-
-    interval = max(0.05, 1.0 / max(0.1, hz))
-    while not stop_event.is_set():
-        t1 = time.time()
-        dt = max(1e-6, t1 - prev_time)
-        try:
-            cpu = float(p.cpu_percent(None))
-        except Exception:
-            cpu = 0.0
-        try:
-            mem = int(p.memory_info().rss)
-        except Exception:
-            mem = 0
-        try:
-            io_now = p.io_counters()
-            rd = int(io_now.read_bytes)
-            wr = int(io_now.write_bytes)
-            rd_bps = max(0.0, (rd - rd_prev) / dt)
-            wr_bps = max(0.0, (wr - wr_prev) / dt)
-            rd_prev, wr_prev = rd, wr
-        except Exception:
-            rd_bps = 0.0
-            wr_bps = 0.0
-
-        cpu_peak = max(cpu_peak, cpu)
-        mem_peak = max(mem_peak, mem)
-        rd_bps_peak = max(rd_bps_peak, rd_bps)
-        wr_bps_peak = max(wr_bps_peak, wr_bps)
-
-        try:
-            CPU_PCT.record(cpu, attributes=attributes, context=ctx)
-            MEM_RSS.record(mem, attributes=attributes, context=ctx)
-            IO_RD_BPS.record(rd_bps, attributes=attributes, context=ctx)
-            IO_WR_BPS.record(wr_bps, attributes=attributes, context=ctx)
-        except Exception:
-            pass
-
-        if gpu_available:
-            try:
-                import pynvml  # type: ignore
-                for idx, h in enumerate(gpu_handles):
-                    util = float(pynvml.nvmlDeviceGetUtilizationRates(h).gpu)
-                    meminfo = pynvml.nvmlDeviceGetMemoryInfo(h)
-                    mem_used = int(meminfo.used)
-                    dev_attrs = {**attributes, "device": str(idx)}
-                    GPU_UTIL.record(util, attributes=dev_attrs, context=ctx)
-                    GPU_MEM.record(mem_used, attributes=dev_attrs, context=ctx)
-                    gpu_util_peaks[idx] = max(gpu_util_peaks.get(idx, 0.0), util)
-                    gpu_mem_peaks[idx] = max(gpu_mem_peaks.get(idx, 0), mem_used)
-            except Exception:
-                pass
-
-        # responsive sleep
-        stop_event.wait(max(0.0, interval - (time.time() - t1)))
-        prev_time = t1
-
-    try:
-        CPU_PCT_PEAK.record(cpu_peak, attributes=attributes, context=ctx)
-        MEM_RSS_PEAK.record(mem_peak, attributes=attributes, context=ctx)
-        IO_RD_BPS_PEAK.record(rd_bps_peak, attributes=attributes, context=ctx)
-        IO_WR_BPS_PEAK.record(wr_bps_peak, attributes=attributes, context=ctx)
-        if gpu_available:
-            for idx, util_peak in gpu_util_peaks.items():
-                dev_attrs = {**attributes, "device": str(idx)}
-                GPU_UTIL_PEAK.record(util_peak, attributes=dev_attrs, context=ctx)
-            for idx, mem_peak_val in gpu_mem_peaks.items():
-                dev_attrs = {**attributes, "device": str(idx)}
-                GPU_MEM_PEAK.record(mem_peak_val, attributes=dev_attrs, context=ctx)
-    except Exception:
-        pass
-
-    try:
-        if gpu_available:
-            import pynvml  # type: ignore
-            pynvml.nvmlShutdown()
-    except Exception:
-        pass
-
-
 @app.post("/index-chunk")
 async def consume(input: dict):
     service_attrs = {
@@ -315,17 +193,15 @@ async def consume(input: dict):
     async def work(payload: dict) -> dict:
         t0 = time.time()
         with _tracer.start_as_current_span("index") as span:
-            sampler_thread = None
-            stop_event = threading.Event()
-            ctx = otel_context.get_current()
-            res_attrs = {"stage": "index", **service_attrs}
+            sampler_handle = None
             if RESOURCE_SAMPLER_ENABLED:
-                sampler_thread = threading.Thread(
-                    target=_sample_resources_thread,
-                    args=(stop_event, res_attrs, RESOURCE_SAMPLER_HZ, ctx),
-                    daemon=True,
+                sampler_handle = start_process_resource_metrics(
+                    meter=_meter,
+                    base_attributes=service_attrs,
+                    stage="index",
+                    hz=RESOURCE_SAMPLER_HZ,
+                    enable_gpu=GPU_METRICS_ENABLED,
                 )
-                sampler_thread.start()
             try:
                 req = IndexChunkRequest(
                     workspace_id=payload["workspace_id"],
@@ -386,7 +262,10 @@ async def consume(input: dict):
                     pass
 
                 # Upsert to Qdrant
-                qdr_attrs = {**service_attrs, "qdrant_collection": QDRANT_COLLECTION_NAME}
+                qdr_attrs = {
+                    **service_attrs,
+                    "qdrant_collection": QDRANT_COLLECTION_NAME,
+                }
                 _tu = time.time()
                 try:
                     qdrant_client.upsert(
@@ -407,7 +286,9 @@ async def consume(input: dict):
                     )
                     UPserts.add(1, attributes=qdr_attrs)
                 except Exception as qe:
-                    UP_ERRS.add(1, attributes={**qdr_attrs, "error": type(qe).__name__})
+                    UP_ERRS.add(
+                        1, attributes={**qdr_attrs, "error": type(qe).__name__}
+                    )
                     raise
 
                 # Queue wait if provided
@@ -436,11 +317,9 @@ async def consume(input: dict):
                 span.record_exception(e)
                 raise
             finally:
-                if RESOURCE_SAMPLER_ENABLED:
+                if RESOURCE_SAMPLER_ENABLED and sampler_handle is not None:
                     try:
-                        stop_event.set()
-                        if sampler_thread is not None:
-                            sampler_thread.join(timeout=2.0)
+                        stop_resource_sampler(sampler_handle)
                     except Exception:
                         pass
                 IDX_LAT.record(
@@ -459,4 +338,3 @@ async def consume(input: dict):
             context=otel_context.get_current(),
         )
     return result
- 

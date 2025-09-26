@@ -257,20 +257,6 @@ async def consume(input: dict):
                     )
                 except Exception:
                     pass
-        definition = PipelineDefinition(
-            description="Index document pipeline",
-            s3_key=payload["s3_key"],
-            file_id=payload["file_id"],
-            workspace_id=payload["workspace_id"],
-            original_filename=payload["original_filename"],
-            steps=[
-                PipelineStep(name=s["name"]) for s in payload.get("steps", [])
-            ],
-            task_id=payload.get("task_id"),
-        )
-        # Let exceptions bubble to TaskManager so it FAILs and frees slot
-        await _run_pipeline(definition, base_attrs)
-        return {}
 
     return await manager.execute_task(input, work)
 

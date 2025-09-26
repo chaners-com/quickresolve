@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Document Parsing Service
-Parses PDF/DOC/DOCX to Markdown,
-Once parsed, it forwards to the chunking service.
+Parses PDF/DOC/DOCX to Markdown.
 """
 
 import asyncio

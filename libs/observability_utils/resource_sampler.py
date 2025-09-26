@@ -143,6 +143,16 @@ def start_process_resource_metrics(
     hz: float = 1.0,
     enable_gpu: bool = False,
 ) -> SamplerHandle:
+    # Kill switch: if SDK disabled or metrics disabled, do nothing
+    try:
+        if (
+            os.getenv("OTEL_SDK_DISABLED", "true").lower() == "true"
+            or os.getenv("OTEL_METRICS_ENABLED", "false").lower() != "true"
+        ):
+            return SamplerHandle(thread=None, stop_event=None)
+    except Exception:
+        pass
+
     ctx = otel_context.get_current()
     recorder = build_resource_recorder(meter)
     attrs = {"stage": stage, **(base_attributes or {})}
@@ -164,6 +174,12 @@ def start_process_resource_metrics(
 
 def stop_resource_sampler(handle: SamplerHandle) -> None:
     try:
+        if (
+            not handle
+            or not getattr(handle, "stop_event", None)
+            or not getattr(handle, "thread", None)
+        ):
+            return
         handle.stop_event.set()
         handle.thread.join(timeout=2.0)
     except Exception:

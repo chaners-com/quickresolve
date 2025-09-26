@@ -101,22 +101,28 @@ RESOURCE_SAMPLER_HZ = float(os.getenv("RESOURCE_SAMPLER_HZ", "1"))
 GPU_METRICS_ENABLED = (
     os.getenv("GPU_METRICS_ENABLED", "false").lower() == "true"
 )
+OTEL_SDK_DISABLED = os.getenv("OTEL_SDK_DISABLED", "true").lower() == "true"
+OTEL_METRICS_ENABLED = (
+    os.getenv("OTEL_METRICS_ENABLED", "false").lower() == "true"
+)
 
 _resource = Resource.create({"service.name": OTEL_SERVICE_NAME})
-_tracer_provider = TracerProvider(resource=_resource)
-_tracer_provider.add_span_processor(
-    BatchSpanProcessor(OTLPSpanExporter(endpoint=OTLP_ENDPOINT))
-)
-trace.set_tracer_provider(_tracer_provider)
+if not OTEL_SDK_DISABLED:
+    _tracer_provider = TracerProvider(resource=_resource)
+    _tracer_provider.add_span_processor(
+        BatchSpanProcessor(OTLPSpanExporter(endpoint=OTLP_ENDPOINT))
+    )
+    trace.set_tracer_provider(_tracer_provider)
 _tracer = trace.get_tracer(__name__)
-_metric_reader = PeriodicExportingMetricReader(
-    OTLPMetricExporter(endpoint=OTLP_ENDPOINT),
-    export_interval_millis=OTEL_METRICS_EXPORT_INTERVAL_MS,
-)
-_meter_provider = MeterProvider(
-    resource=_resource, metric_readers=[_metric_reader]
-)
-set_meter_provider(_meter_provider)
+if OTEL_METRICS_ENABLED and not OTEL_SDK_DISABLED:
+    _metric_reader = PeriodicExportingMetricReader(
+        OTLPMetricExporter(endpoint=OTLP_ENDPOINT),
+        export_interval_millis=OTEL_METRICS_EXPORT_INTERVAL_MS,
+    )
+    _meter_provider = MeterProvider(
+        resource=_resource, metric_readers=[_metric_reader]
+    )
+    set_meter_provider(_meter_provider)
 _meter = get_meter(__name__)
 
 # Instruments (see observability

@@ -8,7 +8,11 @@ for the OpenTelemetry API.
 from dataclasses import dataclass
 from typing import Any
 
-from opentelemetry.metrics import Meter
+# Delay importing heavy modules until used to avoid cost when disabled
+try:
+    from opentelemetry.metrics import Meter  # type: ignore
+except Exception:
+    Meter = object  # type: ignore
 
 
 @dataclass

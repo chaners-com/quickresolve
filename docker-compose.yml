@@ -88,6 +88,8 @@ services:
       MAX_UPLOAD_MB: "4"
       OTEL_SERVICE_NAME: ingestion-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SDK_DISABLED: "${OTEL_SDK_DISABLED}"
+      OTEL_METRICS_ENABLED: "${OTEL_METRICS_ENABLED}"
     restart: unless-stopped
 
   embedding-service:
@@ -107,6 +109,8 @@ services:
       EMBED_MAX_CONCURRENT: "20"
       OTEL_SERVICE_NAME: embedding-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SDK_DISABLED: "${OTEL_SDK_DISABLED}"
+      OTEL_METRICS_ENABLED: "${OTEL_METRICS_ENABLED}"
     restart: unless-stopped
 
   ai-agent-service:
@@ -118,6 +122,8 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       OTEL_SERVICE_NAME: ai-agent-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SDK_DISABLED: "${OTEL_SDK_DISABLED}"
+      OTEL_METRICS_ENABLED: "${OTEL_METRICS_ENABLED}"
     restart: unless-stopped
 
 
@@ -142,6 +148,8 @@ services:
       TASK_SERVICE_URL: "http://task-service:8010"
       OTEL_SERVICE_NAME: document-parsing-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SDK_DISABLED: "${OTEL_SDK_DISABLED}"
+      OTEL_METRICS_ENABLED: "${OTEL_METRICS_ENABLED}"
     depends_on:
       - db
       - minio
@@ -161,6 +169,8 @@ services:
       S3_BUCKET: "${S3_BUCKET}"
       OTEL_SERVICE_NAME: chunking-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SDK_DISABLED: "${OTEL_SDK_DISABLED}"
+      OTEL_METRICS_ENABLED: "${OTEL_METRICS_ENABLED}"
     depends_on:
       - minio
     restart: unless-stopped
@@ -179,6 +189,8 @@ services:
       S3_BUCKET: "${S3_BUCKET}"
       OTEL_SERVICE_NAME: redaction-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SDK_DISABLED: "${OTEL_SDK_DISABLED}"
+      OTEL_METRICS_ENABLED: "${OTEL_METRICS_ENABLED}"
     depends_on:
       - chunking-service
     restart: unless-stopped
@@ -206,6 +218,8 @@ services:
       INDEXING_SERVICE_URL: "http://indexing-service:8012"
       OTEL_SERVICE_NAME: task-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SDK_DISABLED: "${OTEL_SDK_DISABLED}"
+      OTEL_METRICS_ENABLED: "${OTEL_METRICS_ENABLED}"
     depends_on:
       - db
     restart: unless-stopped
@@ -220,6 +234,8 @@ services:
       TASK_SERVICE_URL: "http://task-service:8010"
       OTEL_SERVICE_NAME: index-document-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SDK_DISABLED: "${OTEL_SDK_DISABLED}"
+      OTEL_METRICS_ENABLED: "${OTEL_METRICS_ENABLED}"
     depends_on:
       - task-service
     restart: unless-stopped
@@ -242,6 +258,8 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       RESOURCE_SAMPLER_ENABLED: "true"
       RESOURCE_SAMPLER_HZ: "1"
+      OTEL_SDK_DISABLED: "${OTEL_SDK_DISABLED}"
+      OTEL_METRICS_ENABLED: "${OTEL_METRICS_ENABLED}"
     depends_on:
       - qdrant
       - minio
@@ -259,6 +277,8 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       OTEL_SERVICE_NAME: search-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SDK_DISABLED: "${OTEL_SDK_DISABLED}"
+      OTEL_METRICS_ENABLED: "${OTEL_METRICS_ENABLED}"
     depends_on:
       - qdrant
     restart: unless-stopped

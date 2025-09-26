@@ -114,22 +114,28 @@ RESOURCE_SAMPLER_HZ = float(os.getenv("RESOURCE_SAMPLER_HZ", "1"))
 GPU_METRICS_ENABLED = (
     os.getenv("GPU_METRICS_ENABLED", "false").lower() == "true"
 )
+OTEL_SDK_DISABLED = os.getenv("OTEL_SDK_DISABLED", "true").lower() == "true"
+OTEL_METRICS_ENABLED = (
+    os.getenv("OTEL_METRICS_ENABLED", "false").lower() == "true"
+)
 
 _resource = Resource.create({"service.name": OTEL_SERVICE_NAME})
-_tracer_provider = TracerProvider(resource=_resource)
-_tracer_provider.add_span_processor(
-    BatchSpanProcessor(OTLPSpanExporter(endpoint=OTLP_ENDPOINT))
-)
-trace.set_tracer_provider(_tracer_provider)
+if not OTEL_SDK_DISABLED:
+    _tracer_provider = TracerProvider(resource=_resource)
+    _tracer_provider.add_span_processor(
+        BatchSpanProcessor(OTLPSpanExporter(endpoint=OTLP_ENDPOINT))
+    )
+    trace.set_tracer_provider(_tracer_provider)
 _tracer = trace.get_tracer(__name__)
-_metric_reader = PeriodicExportingMetricReader(
-    OTLPMetricExporter(endpoint=OTLP_ENDPOINT),
-    export_interval_millis=OTEL_METRICS_EXPORT_INTERVAL_MS,
-)
-_meter_provider = MeterProvider(
-    resource=_resource, metric_readers=[_metric_reader]
-)
-set_meter_provider(_meter_provider)
+if OTEL_METRICS_ENABLED and not OTEL_SDK_DISABLED:
+    _metric_reader = PeriodicExportingMetricReader(
+        OTLPMetricExporter(endpoint=OTLP_ENDPOINT),
+        export_interval_millis=OTEL_METRICS_EXPORT_INTERVAL_MS,
+    )
+    _meter_provider = MeterProvider(
+        resource=_resource, metric_readers=[_metric_reader]
+    )
+    set_meter_provider(_meter_provider)
 _meter = get_meter(__name__)
 
 # Instruments
@@ -153,7 +159,9 @@ S3_PUT_ERRS = _meter.create_counter("s3_put_errors_total")
 
 EMB_VECTORS = _meter.create_counter("embedding_vectors_total")
 VEC_DIM = _meter.create_histogram("embedding_vector_dim")
-VEC_DIM_MISMATCH = _meter.create_counter("embedding_vector_dim_mismatch_total")
+VEC_DIM_MISMATCH = _meter.create_counter(
+    "embedding_vector_dim_mismatch_total",
+)
 
 # Resource usage metrics handled by shared utility
 
@@ -324,7 +332,7 @@ async def consume(input: dict):
                             await asyncio.sleep(delay)
                 else:
                     raise RuntimeError(
-                        f"Failed to persist payload metadata to S3: {last_err}"
+                        f"Failed to persist payload metadata to S3:{last_err}"
                     )
                 S3_PUT_LAT.record(
                     time.time() - _tb,
@@ -382,7 +390,10 @@ async def consume(input: dict):
                     "workspace_id": req.workspace_id,
                     "_end_ts": time.time(),
                 }
-                EMB_DONE.add(1, attributes={**service_attrs, "status_code": 2})
+                EMB_DONE.add(
+                    1,
+                    attributes={**service_attrs, "status_code": 200},
+                )
                 return result
             except Exception as e:
                 EMB_ERRS.add(

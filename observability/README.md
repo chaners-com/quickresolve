@@ -1,5 +1,19 @@
 ### Observability Stack (OTel Collector → Tempo + Mimir → Grafana)
 
+#### Enabling metrics and traces (defaults are OFF)
+- Defaults in services:
+  - `OTEL_SDK_DISABLED=true`
+  - `OTEL_METRICS_ENABLED=false`
+- To enable per service, set (in `.env` or compose):
+  - `OTEL_SDK_DISABLED=false` to initialize OTel providers
+  - `OTEL_METRICS_ENABLED=true` to activate metrics emission
+- Optional resource sampler controls:
+  - `RESOURCE_SAMPLER_ENABLED=true|false` (default true)
+  - `RESOURCE_SAMPLER_HZ=1` (Hz)
+  - `GPU_METRICS_ENABLED=true|false` (default false)
+
+See root `README.md` for a quick overview and `docs/observability/grafana-user-guide.md` for Grafana usage.
+
 This guide explains how to run the OpenTelemetry Collector and Grafana backends (Tempo for traces, Mimir for metrics), and how to explore metrics and traces in Grafana.
 
 #### Components

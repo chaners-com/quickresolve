@@ -55,7 +55,7 @@ from database import (
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from registry import REGISTRY
+# Registry removed: dispatch now targets the ready consumer's advertised endpoint_url directly
 
 app = FastAPI()
 
@@ -399,22 +399,12 @@ def _assign_once_fifo():
                     # Consume token
                     c.is_ready = 0
                     db.commit()
-                    # Dispatch via registry (HTTP) asynchronously
-                    # on the main loop
-                    name_lc = (t.name or "").lower()
-                    entry = REGISTRY.get(name_lc)
-                    if entry and entry.get("type") == "http":
-                        _schedule_coro(
-                            _run_http_dispatch_worker_async(t.id, entry)
+                    # Dispatch directly to the consumer's advertised endpoint_url
+                    _schedule_coro(
+                        _run_http_dispatch_to_consumer_async(
+                            t.id, c.endpoint_url
                         )
-                    elif (
-                        entry
-                        and entry.get("type") == "internal"
-                        and entry.get("handler") == "hello_world"
-                    ):
-                        _schedule_coro(_run_hello_world_worker_async(t.id))
-                    else:
-                        _mark_task_failed(t.id, {"error": "unknown task"})
+                    )
                 except Exception:
                     db.rollback()
                     continue
@@ -514,6 +504,23 @@ async def _run_http_dispatch_worker_async(task_id: UUID, entry: dict):
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 await client.post(url, json=payload)
+            except Exception:
+                pass
+    finally:
+        db.close()
+
+
+async def _run_http_dispatch_to_consumer_async(task_id: UUID, endpoint_url: str):
+    db = SessionLocal()
+    try:
+        t = db.query(DBTask).filter(DBTask.id == task_id).first()
+        if not t:
+            return
+        timeout = 30.0
+        payload = {"task_id": str(t.id), **(t.input or {})}
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            try:
+                await client.post(endpoint_url, json=payload)
             except Exception:
                 pass
     finally:

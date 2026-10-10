@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ detail: 'workspace_id parameter required' }, { status: 400 })
     }
 
-    const response = await fetch(`${process.env.AI_AGENT_SERVICE_URL || 'http://localhost:8001'}/search/?query=${encodeURIComponent(query)}&workspace_id=${workspaceId}`)
+    const response = await fetch(`${process.env.SEARCH_SERVICE_URL || 'http://localhost:8003'}/search/?query=${encodeURIComponent(query)}&workspace_id=${workspaceId}`)
     
     if (!response.ok) {
       return NextResponse.json({ detail: 'Search failed' }, { status: response.status })

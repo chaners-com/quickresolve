@@ -5,7 +5,7 @@ import { sanitizeEmail, detectSuspiciousPatterns } from '../../../../lib/sanitiz
 import { createSecureResponse, createRateLimitResponse, createValidationErrorResponse, createServerErrorResponse, logSecurityEvent } from '../../../../lib/security'
 
 // Auth service URL
-const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:8003'
+const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:8004'
 
 export async function POST(request: NextRequest) {
   try {

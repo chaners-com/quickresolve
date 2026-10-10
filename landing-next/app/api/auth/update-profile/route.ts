@@ -3,7 +3,7 @@ import { requireAuth, getAuthToken } from '../../../../lib/auth'
 import { createSecureResponse, createValidationErrorResponse, logSecurityEvent } from '../../../../lib/security'
 import { sanitizeUserRegistrationData, detectSuspiciousPatterns } from '../../../../lib/sanitization'
 
-const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:8003'
+const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:8004'
 
 export async function PUT(request: NextRequest) {
   try {

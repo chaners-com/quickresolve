@@ -80,7 +80,7 @@ services:
   auth-service:
     build: ./backend/auth-service
     ports:
-      - "8003:8000"
+      - "8004:8000"  # 8003 is used by search-service
     volumes:
       - ./backend:/app/backend
     environment:
@@ -112,7 +112,8 @@ services:
       - AUTH_SERVICE_URL=http://auth-service:8000
       - INGESTION_SERVICE_URL=http://ingestion-service:8000
       - AI_AGENT_SERVICE_URL=http://ai-agent-service:8002
-      - EMBEDDING_SERVICE_URL=http://embedding-service:8001
+      - SEARCH_SERVICE_URL=http://search-service:8003
+      - TASK_SERVICE_URL=http://task-service:8010
       - DOCUMENT_PARSING_SERVICE_URL=http://document-parsing-service:8005
       - CHUNKING_SERVICE_URL=http://chunking-service:8006
       - JWT_SECRET=${JWT_SECRET}
@@ -186,6 +187,7 @@ services:
     environment:
       QDRANT_URL: "http://qdrant:6333"
       GEMINI_API_KEY: ${GEMINI_API_KEY}
+      SEARCH_SERVICE_URL: "http://search-service:8003"
       OTEL_SERVICE_NAME: ai-agent-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_SDK_DISABLED: "${OTEL_SDK_DISABLED}"
@@ -382,7 +384,7 @@ services:
   grafana:
     image: grafana/grafana:11.2.0
     ports:
-      - "3000:3000"
+      - "3001:3000"  # 3000 is used by landing-next
     volumes:
       - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources:ro
       - ./observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro

@@ -359,7 +359,7 @@ export default function FileUploadPage() {
               pollFileStatus(fileName, location, (finalStatus) => {
                 setCurrentlyProcessing(prev => prev.filter(f => f !== fileName))
                 
-                if (finalStatus.status === 3) {
+                if (finalStatus.status_code === 3) {
                   setFailedFiles(prev => {
                     const newFailed = [...prev, fileName]
                     // Update overall status with current counts
@@ -367,7 +367,7 @@ export default function FileUploadPage() {
                     updateOverallStatus(currentCompleted, totalFiles, newFailed.length)
                     return newFailed
                   })
-                } else if (finalStatus.status === 2) {
+                } else if (finalStatus.status_code === 2) {
                   setCompletedFiles(prev => {
                     const newCompleted = [...prev, fileName]
                     // Update overall status with current counts
@@ -448,15 +448,15 @@ export default function FileUploadPage() {
           return response.json()
         })
         .then(data => {
-          setMessage({ type: 'success', text: `${fileName}: ${getStatusText(data.status)}` })
+          setMessage({ type: 'success', text: `${fileName}: ${getStatusText(data.status_code)}` })
 
-          if (data.status === 3) {
+          if (data.status_code === 3) {
             setMessage({ type: 'error', text: `${fileName}: Error` })
             callback(data)
             return
           }
 
-          if (data.status === 2) {
+          if (data.status_code === 2) {
             callback(data)
             return
           }
@@ -487,6 +487,7 @@ export default function FileUploadPage() {
 
   const getStatusText = (status: number) => {
     switch (status) {
+      case 0: return 'Queued'
       case 1: return 'Processing'
       case 2: return 'Done'
       case 3: return 'Error'

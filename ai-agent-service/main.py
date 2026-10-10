@@ -59,8 +59,8 @@ app.add_middleware(
 qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"))
 
 # External services inside the docker-compose network
-EMBEDDING_SERVICE_URL = os.getenv(
-    "EMBEDDING_SERVICE_URL", "http://embedding-service:8001"
+SEARCH_SERVICE_URL = os.getenv(
+    "SEARCH_SERVICE_URL", "http://search-service:8003"
 )
 INGESTION_SERVICE_URL = os.getenv(
     "INGESTION_SERVICE_URL", "http://ingestion-service:8000"
@@ -88,16 +88,16 @@ QDRANT_COLLECTION_NAME = "file_embeddings"
 def startup_event():
     # Log service URLs for debugging
     print("AI Agent Service starting up...")
-    print(f"Embedding Service URL: {EMBEDDING_SERVICE_URL}")
+    print(f"Search Service URL: {SEARCH_SERVICE_URL}")
     print(f"Ingestion Service URL: {INGESTION_SERVICE_URL}")
 
     # Test connectivity to external services
     try:
-        # Test embedding service
-        resp = requests.get(f"{EMBEDDING_SERVICE_URL}/health", timeout=5)
-        print(f"Embedding service health check: {resp.status_code}")
+        # Test search service
+        resp = requests.get(f"{SEARCH_SERVICE_URL}/health", timeout=5)
+        print(f"Search service health check: {resp.status_code}")
     except Exception as e:
-        print(f"Warning: Cannot connect to embedding service: {e}")
+        print(f"Warning: Cannot connect to search service: {e}")
 
     try:
         # Test ingestion service
@@ -135,16 +135,16 @@ def startup_event():
 def search_relevant_documents(
     query: str, workspace_id: int, top_k: int = 3
 ) -> List[dict]:
-    """Search for relevant documents for a workspace via the embedding service."""
+    """Search for relevant documents for a workspace via the search service."""
     try:
         print(
             f"Searching for query: '{query}' in workspace {workspace_id} "
             f"with top_k={top_k}"
         )
-        print(f"Using embedding service URL: {EMBEDDING_SERVICE_URL}")
+        print(f"Using search service URL: {SEARCH_SERVICE_URL}")
 
         resp = requests.get(
-            f"{EMBEDDING_SERVICE_URL}/search/",
+            f"{SEARCH_SERVICE_URL}/search/",
             params={
                 "query": query,
                 "workspace_id": workspace_id,
@@ -153,10 +153,10 @@ def search_relevant_documents(
             timeout=15,
         )
 
-        print(f"Embedding service response status: {resp.status_code}")
+        print(f"Search service response status: {resp.status_code}")
 
         if resp.status_code != 200:
-            print(f"Embedding service error: {resp.text}")
+            print(f"Search service error: {resp.text}")
             return []
 
         resp.raise_for_status()

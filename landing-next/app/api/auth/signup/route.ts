@@ -4,7 +4,7 @@ import { signupLimiter, getClientIP } from '../../../../lib/rateLimiter'
 import { sanitizeUserRegistrationData, detectSuspiciousPatterns } from '../../../../lib/sanitization'
 
 // Auth service URL
-const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:8003'
+const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:8004'
 
 // Password validation function
 interface PasswordValidation {
